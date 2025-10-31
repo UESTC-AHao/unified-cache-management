@@ -55,6 +55,12 @@ class UcmNfsStore(UcmKVStoreBase):
             param.transferIoSize = config["io_size"]
             param.useDirect = useDirect
             param.transferStreamNumber = transferStreamNumber
+        
+        param.storageCapacity = config.get("storageCapacity", 0)
+        param.recycleEnable = True if config.get("recycleEnable", 0) == 1 else False
+        if param.recycleEnable:
+            param.recycleThresholdRatio = config.get("recycleThresholdRatio", 0.7)
+            
         ret = self.store.Setup(param)
         if ret != 0:
             msg = f"Failed to initialize ucmnfsstore, errcode: {ret}."
