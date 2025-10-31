@@ -18,6 +18,7 @@ mooncake_dict_config = {
 }
 
 
+
 def tensor_hash(tensor: torch.Tensor) -> str:
     """Calculate the hash value of the tensor."""
     tensor_bytes = tensor.clone().detach().cpu().numpy().tobytes()
