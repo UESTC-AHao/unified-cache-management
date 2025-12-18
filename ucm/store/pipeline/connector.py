@@ -28,8 +28,8 @@ from typing import Callable, Dict, List
 import torch
 
 from ucm.store.cache.connector import UcmCacheStore
-from ucm.store.posix.connector import UcmPosixStore
 from ucm.store.ds3fs.connector import UcmDs3fsStore
+from ucm.store.posix.connector import UcmPosixStore
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
 PipelineBuilder = Callable[[Dict[str, object], List[UcmKVStoreBaseV1]], None]
@@ -51,6 +51,7 @@ def _build_cache_posix_pipeline(
 PIPELINE_REGISTRY: Dict[str, PipelineBuilder] = {
     "Cache|Posix": _build_cache_posix_pipeline,
 }
+
 
 def _build_cache_ds3fs_pipeline(
     config: Dict[str, object], store: List[UcmKVStoreBaseV1]

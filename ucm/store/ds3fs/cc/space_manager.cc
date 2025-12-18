@@ -22,8 +22,8 @@
  * SOFTWARE.
  * */
 #include "space_manager.h"
-#include "logger/logger.h"
 #include "ds3fs_file.h"
+#include "logger/logger.h"
 
 namespace UC::Ds3fsStore {
 

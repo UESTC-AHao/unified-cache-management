@@ -134,7 +134,6 @@ def e2e_test(
             assert False, f"Data mismatch at block {i}"
 
 
-
 def main():
     block_size = 1048576 * 4
     block_num = 1024
