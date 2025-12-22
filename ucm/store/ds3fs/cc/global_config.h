@@ -30,17 +30,17 @@
 namespace UC::Ds3fsStore {
 
 struct Config {
-    std::vector<std::string> backends{};
+    std::vector<std::string> storageBackends{};
     std::string hf3fsMountPoint{};
-    bool transferEnable{true};
-    size_t ioSize{0};
+    int32_t deviceId{-1};
+    size_t tensorSize{0};
     size_t shardSize{0};
     size_t blockSize{0};
-    bool transferIoDirect{false};
-    size_t transferStreamNumber{8};
-    size_t transferTimeoutMs{30000};
-    size_t iorEntries{1024};
-    int iorDepth{0};
+    bool ioDirect{false};
+    size_t streamNumber{8};
+    size_t timeoutMs{30000};
+    size_t iorEntries{64};
+    int iorDepth{1};
     int numaId{-1};
 };
 

@@ -35,6 +35,19 @@ from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 PipelineBuilder = Callable[[Dict[str, object], List[UcmKVStoreBaseV1]], None]
 
 
+def _build_cache_ds3fs_pipeline(
+    config: Dict[str, object], store: List[UcmKVStoreBaseV1]
+) -> None:
+    ds3fs_config = copy.deepcopy(config)
+    if int(config["device_id"]) >= 0:
+        ds3fs_config |= {"tensor_size": config["shard_size"]}
+    ds3fs_store = UcmDs3fsStore(ds3fs_config)
+    store.append(ds3fs_store)
+    cache_config = copy.deepcopy(config) | {"store_backend": ds3fs_store.cc_store()}
+    cache_store = UcmCacheStore(cache_config)
+    store.append(cache_store)
+
+
 def _build_cache_posix_pipeline(
     config: Dict[str, object], store: List[UcmKVStoreBaseV1]
 ) -> None:
@@ -50,23 +63,6 @@ def _build_cache_posix_pipeline(
 
 PIPELINE_REGISTRY: Dict[str, PipelineBuilder] = {
     "Cache|Posix": _build_cache_posix_pipeline,
-}
-
-
-def _build_cache_ds3fs_pipeline(
-    config: Dict[str, object], store: List[UcmKVStoreBaseV1]
-) -> None:
-    ds3fs_config = copy.deepcopy(config)
-    if int(config["device_id"]) >= 0:
-        ds3fs_config |= {"tensor_size": config["shard_size"]}
-    ds3fs_store = UcmDs3fsStore(ds3fs_config)
-    store.append(ds3fs_store)
-    cache_config = copy.deepcopy(config) | {"store_backend": ds3fs_store.cc_store()}
-    cache_store = UcmCacheStore(cache_config)
-    store.append(cache_store)
-
-
-PIPELINE_REGISTRY: Dict[str, PipelineBuilder] = {
     "Cache|Ds3fs": _build_cache_ds3fs_pipeline,
 }
 

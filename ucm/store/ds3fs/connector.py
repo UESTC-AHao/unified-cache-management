@@ -42,21 +42,21 @@ class UcmDs3fsStore(UcmKVStoreBaseV1):
     def __init__(self, config: Dict[str, object]) -> None:
         super().__init__(config)
 
-        if "hf3fs_mount_point" not in config and "backends" in config:
-            backends = config["backends"]
-            if isinstance(backends, list) and len(backends) > 0:
-                config["hf3fs_mount_point"] = backends[0]
+        if "hf3fs_mount_point" not in config and "storage_backends" in config:
+            storage_backends = config["storage_backends"]
+            if isinstance(storage_backends, list) and len(storage_backends) > 0:
+                config["hf3fs_mount_point"] = storage_backends[0]
 
         key_mapping = {
-            "backends": "backends",
+            "storage_backends": "storageBackends",
             "hf3fs_mount_point": "hf3fsMountPoint",
-            "transfer_enable": "transferEnable",
-            "io_size": "ioSize",
+            "device_id": "deviceId",
+            "tensor_size": "tensorSize",
             "shard_size": "shardSize",
             "block_size": "blockSize",
-            "transfer_io_direct": "transferIoDirect",
-            "transfer_stream_number": "transferStreamNumber",
-            "transfer_timeout_ms": "transferTimeoutMs",
+            "io_direct": "ioDirect",
+            "stream_number": "streamNumber",
+            "timeout_ms": "timeoutMs",
             "ior_entries": "iorEntries",
             "ior_depth": "iorDepth",
             "numa_id": "numaId",
@@ -154,12 +154,12 @@ if __name__ == "__main__":
     os.environ["UC_LOGGER_LEVEL"] = "debug"
     block_size = 1048576
     config = {}
-    config["backends"] = ["."]
-    config["io_size"] = block_size
+    config["storage_backends"] = ["."]
+    config["tensor_size"] = block_size
     config["shard_size"] = block_size
     config["block_size"] = block_size
-    config["transfer_io_direct"] = True
-    config["transfer_stream_number"] = 16
+    config["io_direct"] = True
+    config["stream_number"] = 16
     store = UcmDs3fsStore(config)
     block_num = 1024
     block_ids = [secrets.token_bytes(16) for _ in range(block_num)]

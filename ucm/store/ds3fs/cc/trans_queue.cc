@@ -10,19 +10,19 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
 {
     failureSet_ = failureSet;
     layout_ = layout;
-    ioSize_ = config.ioSize;
+    ioSize_ = config.tensorSize;
     shardSize_ = config.shardSize;
     nShardPerBlock_ = config.blockSize / config.shardSize;
-    ioDirect_ = config.transferIoDirect;
+    ioDirect_ = config.ioDirect;
     mountPoint_ = config.hf3fsMountPoint;
     iorEntries_ = config.iorEntries;
     iorDepth_ = config.iorDepth;
 
-    auto success = pool_.SetNWorker(config.transferStreamNumber)
+    auto success = pool_.SetNWorker(config.streamNumber)
                        .SetWorkerFn([this](auto& ios, auto&) { Worker(ios); })
                        .Run();
     if (!success) [[unlikely]] {
-        return Status::Error(fmt::format("workers({}) start failed", config.transferStreamNumber));
+        return Status::Error(fmt::format("workers({}) start failed", config.streamNumber));
     }
     return Status::OK();
 }

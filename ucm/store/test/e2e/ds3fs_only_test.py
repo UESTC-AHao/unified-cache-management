@@ -41,13 +41,12 @@ class Ds3fsStoreOnly:
         storage_backends: List[str],
     ):
         ds3fs_config = {}
-        ds3fs_config["backends"] = storage_backends
-        ds3fs_config["io_size"] = block_size
+        ds3fs_config["storage_backends"] = storage_backends
+        ds3fs_config["tensor_size"] = block_size
         ds3fs_config["shard_size"] = block_size
         ds3fs_config["block_size"] = block_size
-        ds3fs_config["transfer_enable"] = True
-        ds3fs_config["transfer_io_direct"] = True
-        ds3fs_config["transfer_stream_number"] = 16
+        ds3fs_config["io_direct"] = True
+        ds3fs_config["stream_number"] = 16
         self.ds3fs = UcmDs3fsStore(ds3fs_config)
 
     def lookup(self, block_ids: List[bytes]) -> List[bool]:
