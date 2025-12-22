@@ -42,6 +42,7 @@ class Ds3fsStoreOnly:
     ):
         ds3fs_config = {}
         ds3fs_config["storage_backends"] = storage_backends
+        ds3fs_config["device_id"] = 0
         ds3fs_config["tensor_size"] = block_size
         ds3fs_config["shard_size"] = block_size
         ds3fs_config["block_size"] = block_size

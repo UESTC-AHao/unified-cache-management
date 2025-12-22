@@ -155,6 +155,7 @@ if __name__ == "__main__":
     block_size = 1048576
     config = {}
     config["storage_backends"] = ["."]
+    config["device_id"] = 0
     config["tensor_size"] = block_size
     config["shard_size"] = block_size
     config["block_size"] = block_size
