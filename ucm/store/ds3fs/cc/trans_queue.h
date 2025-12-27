@@ -25,8 +25,10 @@
 #define UNIFIEDCACHE_DS3FS_STORE_CC_TRANS_QUEUE_H
 
 #include <hf3fs_usrbio.h>
+#include <list>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include "global_config.h"
 #include "space_layout.h"
 #include "template/hashset.h"
@@ -115,15 +117,41 @@ private:
         }
         ~FdGuard()
         {
-            if (fd_ >= 0) hf3fs_dereg_fd(fd_);
+            if (fd_ >= 0) {
+                hf3fs_dereg_fd(fd_);
+                close(fd_);
+            }
         }
         FdGuard(const FdGuard&) = delete;
         FdGuard& operator=(const FdGuard&) = delete;
+        FdGuard(FdGuard&& other) noexcept : fd_(other.fd_) { other.fd_ = -1; }
+        FdGuard& operator=(FdGuard&& other) noexcept
+        {
+            if (this != &other) {
+                if (fd_ >= 0) {
+                    hf3fs_dereg_fd(fd_);
+                    close(fd_);
+                }
+                fd_ = other.fd_;
+                other.fd_ = -1;
+            }
+            return *this;
+        }
+    };
+
+    struct WorkerContext {
+        IovGuard iov;
+        IorGuard iorRead;
+        IorGuard iorWrite;
+
+        size_t ioCount{0};
+
+        bool initialized{false};
     };
 
     TaskIdSet* failureSet_;
     const SpaceLayout* layout_;
-    ThreadPool<IoUnit> pool_;
+    ThreadPool<IoUnit, WorkerContext*> pool_;
     size_t ioSize_;
     size_t shardSize_;
     size_t nShardPerBlock_;
@@ -137,10 +165,11 @@ public:
     void Push(TaskPtr task, WaiterPtr waiter);
 
 private:
-    void Worker(IoUnit& ios);
-    Status H2S(IoUnit& ios);
-    Status S2H(IoUnit& ios);
-    Status DoIo(IorGuard& ior, IovGuard& iov, bool isRead, int fd, size_t offset, size_t size);
+    bool InitWorkerContext(WorkerContext*& ctx);
+    void CleanupWorkerContext(WorkerContext*& ctx);
+    void Worker(IoUnit& ios, WorkerContext* ctx);
+    Status H2S(IoUnit& ios, WorkerContext* ctx);
+    Status S2H(IoUnit& ios, WorkerContext* ctx);
 };
 
 }  // namespace UC::Ds3fsStore

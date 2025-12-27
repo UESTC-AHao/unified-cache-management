@@ -135,8 +135,8 @@ def e2e_test(
 
 
 def main():
-    block_size = 1048576 * 4
-    block_num = 1024
+    block_size = 1048576 * 8
+    block_num = 512
     storage_backends = ["."]
     test_batch_number = 64
 

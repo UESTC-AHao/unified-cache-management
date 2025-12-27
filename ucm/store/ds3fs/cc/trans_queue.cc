@@ -42,12 +42,64 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
     iorDepth_ = config.iorDepth;
 
     auto success = pool_.SetNWorker(config.streamNumber)
-                       .SetWorkerFn([this](auto& ios, auto&) { Worker(ios); })
+                       .SetWorkerInitFn([this](auto& ctx) { return InitWorkerContext(ctx); })
+                       .SetWorkerFn([this](auto& ios, auto& ctx) { Worker(ios, ctx); })
+                       .SetWorkerExitFn([this](auto& ctx) { CleanupWorkerContext(ctx); })
                        .Run();
     if (!success) [[unlikely]] {
         return Status::Error(fmt::format("workers({}) start failed", config.streamNumber));
     }
     return Status::OK();
+}
+
+bool TransQueue::InitWorkerContext(WorkerContext*& ctx)
+{
+    try {
+        ctx = new WorkerContext();
+
+        auto s = ctx->iov.Create(mountPoint_, ioSize_);
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Failed to create IOV for worker: {}", s);
+            delete ctx;
+            ctx = nullptr;
+            return false;
+        }
+
+        s = ctx->iorRead.Create(mountPoint_, iorEntries_, true, iorDepth_);
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Failed to create read IOR for worker: {}", s);
+            delete ctx;
+            ctx = nullptr;
+            return false;
+        }
+
+        s = ctx->iorWrite.Create(mountPoint_, iorEntries_, false, iorDepth_);
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Failed to create write IOR for worker: {}", s);
+            delete ctx;
+            ctx = nullptr;
+            return false;
+        }
+
+        ctx->initialized = true;
+        return true;
+
+    } catch (const std::exception& e) {
+        UC_ERROR("Exception during worker context init: {}", e.what());
+        if (ctx) {
+            delete ctx;
+            ctx = nullptr;
+        }
+        return false;
+    }
+}
+
+void TransQueue::CleanupWorkerContext(WorkerContext*& ctx)
+{
+    if (ctx) {
+        delete ctx;
+        ctx = nullptr;
+    }
 }
 
 void TransQueue::Push(TaskPtr task, WaiterPtr waiter)
@@ -61,7 +113,7 @@ void TransQueue::Push(TaskPtr task, WaiterPtr waiter)
     pool_.Push(ios);
 }
 
-void TransQueue::Worker(IoUnit& ios)
+void TransQueue::Worker(IoUnit& ios, WorkerContext* ctx)
 {
     if (ios.firstIo) {
         auto wait = NowTime::Now() - ios.waiter->startTp;
@@ -73,166 +125,146 @@ void TransQueue::Worker(IoUnit& ios)
     }
     auto s = Status::OK();
     if (ios.type == TransTask::Type::DUMP) {
-        s = H2S(ios);
+        s = H2S(ios, ctx);
         if (ios.shard.index + 1 == nShardPerBlock_) {
             layout_->CommitFile(ios.shard.owner, s.Success());
         }
     } else {
-        s = S2H(ios);
+        s = S2H(ios, ctx);
     }
     if (s.Failure()) [[unlikely]] { failureSet_->Insert(ios.owner); }
     ios.waiter->Done();
 }
 
-Status TransQueue::DoIo(IorGuard& ior, IovGuard& iov, bool isRead, int fd, size_t offset,
-                        size_t size)
+Status TransQueue::H2S(IoUnit& ios, WorkerContext* ctx)
 {
-    int prepRes =
-        hf3fs_prep_io(ior.Get(), iov.Get(), isRead, iov.Base(), fd, offset, size, nullptr);
-    if (prepRes < 0) [[unlikely]] {
-        return Status::OsApiError(
-            fmt::format("Failed to prep {} io: {}", isRead ? "read" : "write", prepRes));
+    if (!ctx || !ctx->initialized) [[unlikely]] {
+        return Status::Error("Worker context not initialized");
     }
 
-    int submitRes = hf3fs_submit_ios(ior.Get());
-    if (submitRes < 0) [[unlikely]] {
-        return Status::OsApiError(
-            fmt::format("Failed to submit {} ios: {}", isRead ? "read" : "write", submitRes));
-    }
-
-    struct hf3fs_cqe cqe;
-    int waitRes = hf3fs_wait_for_ios(ior.Get(), &cqe, 1, 1, nullptr);
-    if (waitRes <= 0) [[unlikely]] {
-        return Status::OsApiError(
-            fmt::format("Failed to wait for {} ios: {}", isRead ? "read" : "write", waitRes));
-    }
-
-    if (cqe.result < 0) [[unlikely]] {
-        return Status::OsApiError(
-            fmt::format("{} operation failed: {}", isRead ? "Read" : "Write", cqe.result));
-    }
-
-    return Status::OK();
-}
-
-Status TransQueue::H2S(IoUnit& ios)
-{
     const auto& path = layout_->DataFilePath(ios.shard.owner, true);
-    Ds3fsFile file{path};
     auto flags = Ds3fsFile::OpenFlag::CREATE | Ds3fsFile::OpenFlag::WRITE_ONLY;
     if (ioDirect_) { flags |= Ds3fsFile::OpenFlag::DIRECT; }
 
+    Ds3fsFile file{path};
     auto s = file.Open(flags);
     if (s.Failure()) [[unlikely]] {
-        UC_ERROR("Failed({}) to open file({}) with flags({}).", s, path, flags);
+        UC_ERROR("Failed to open file({}): {}", path, s);
         return s;
     }
 
-    auto fd = file.Handle();
+    int fd = file.ReleaseHandle();
 
     FdGuard fdGuard;
-    if (auto s = fdGuard.Register(fd); s.Failure()) [[unlikely]]
-    {
-        UC_ERROR("Failed to register fd for H2S: task({}), file({}), fd({}). Error: {}", ios.owner,
-                 path, fd, s);
-        return s;
-    }
-
-    IovGuard iov;
-    if (auto s = iov.Create(mountPoint_, ioSize_); s.Failure()) [[unlikely]]
-    {
-        UC_ERROR(
-            "Failed to create IOV for H2S: task({}), file({}), mountPoint({}), ioSize({}). Error: "
-            "{}",
-            ios.owner, path, mountPoint_, ioSize_, s);
-        return s;
-    }
-
-    IorGuard ior;
-    if (auto s = ior.Create(mountPoint_, iorEntries_, false, iorDepth_); s.Failure()) [[unlikely]]
-    {
-        UC_ERROR(
-            "Failed to create IOR for H2S: task({}), file({}), mountPoint({}), entries({}), "
-            "depth({}). Error: {}",
-            ios.owner, path, mountPoint_, iorEntries_, iorDepth_, s);
+    s = fdGuard.Register(fd);
+    if (s.Failure()) [[unlikely]] {
+        UC_ERROR("Failed to register fd({}) for file({}): {}", fd, path, s);
+        close(fd);
         return s;
     }
 
     auto offset = shardSize_ * ios.shard.index;
-    for (const auto& addr : ios.shard.addrs) {
-        std::memcpy(iov.Base(), reinterpret_cast<const void*>(addr), ioSize_);
+    const size_t numTensors = ios.shard.addrs.size();
 
-        if (auto s = DoIo(ior, iov, false, fd, offset, ioSize_); s.Failure()) [[unlikely]]
-        {
-            UC_ERROR(
-                "Failed to write data in H2S: task({}), file({}), offset({}), size({}). Error: {}",
-                ios.owner, path, offset, ioSize_, s);
-            return s;
-        }
-
-        offset += ioSize_;
+    if (numTensors != 1) [[unlikely]] {
+        UC_ERROR("Unexpected numTensors={}, expected 1 for H2S", numTensors);
     }
 
+    std::memcpy(ctx->iov.Base(), reinterpret_cast<const void*>(ios.shard.addrs[0]), ioSize_);
+
+    int prepRes = hf3fs_prep_io(ctx->iorWrite.Get(), ctx->iov.Get(), false, ctx->iov.Base(), fd,
+                                offset, ioSize_, nullptr);
+    if (prepRes < 0) [[unlikely]] {
+        UC_ERROR("Failed to prep write io: result={}, path={}", prepRes, path);
+        return Status::OsApiError(fmt::format("Failed to prep write io: {}", prepRes));
+    }
+
+    int submitRes = hf3fs_submit_ios(ctx->iorWrite.Get());
+    if (submitRes < 0) [[unlikely]] {
+        UC_ERROR("Failed to submit write io: result={}, path={}", submitRes, path);
+        return Status::OsApiError(fmt::format("Failed to submit write ios: {}", submitRes));
+    }
+
+    struct hf3fs_cqe cqe;
+    int waitRes = hf3fs_wait_for_ios(ctx->iorWrite.Get(), &cqe, 1, 1, nullptr);
+    if (waitRes <= 0) [[unlikely]] {
+        UC_ERROR("Failed to wait for write io: result={}, path={}", waitRes, path);
+        return Status::OsApiError(fmt::format("Failed to wait for write ios: {}", waitRes));
+    }
+
+    if (cqe.result < 0) [[unlikely]] {
+        UC_ERROR("Write operation failed: result={}, offset={}, size={}, path={}", cqe.result,
+                 offset, ioSize_, path);
+        return Status::OsApiError(fmt::format("Write operation failed: {}", cqe.result));
+    }
+
+    ctx->ioCount++;
     return Status::OK();
 }
 
-Status TransQueue::S2H(IoUnit& ios)
+Status TransQueue::S2H(IoUnit& ios, WorkerContext* ctx)
 {
+    if (!ctx || !ctx->initialized) [[unlikely]] {
+        return Status::Error("Worker context not initialized");
+    }
+
     const auto& path = layout_->DataFilePath(ios.shard.owner, false);
-    Ds3fsFile file{path};
     auto flags = Ds3fsFile::OpenFlag::READ_ONLY;
     if (ioDirect_) { flags |= Ds3fsFile::OpenFlag::DIRECT; }
 
+    Ds3fsFile file{path};
     auto s = file.Open(flags);
     if (s.Failure()) [[unlikely]] {
-        UC_ERROR("Failed({}) to open file({}) with flags({}).", s, path, flags);
+        UC_ERROR("Failed to open file({}): {}", path, s);
         return s;
     }
 
-    auto fd = file.Handle();
+    int fd = file.ReleaseHandle();
 
     FdGuard fdGuard;
-    if (auto s = fdGuard.Register(fd); s.Failure()) [[unlikely]]
-    {
-        UC_ERROR("Failed to register fd for S2H: task({}), file({}), fd({}). Error: {}", ios.owner,
-                 path, fd, s);
-        return s;
-    }
-
-    IovGuard iov;
-    if (auto s = iov.Create(mountPoint_, ioSize_); s.Failure()) [[unlikely]]
-    {
-        UC_ERROR(
-            "Failed to create IOV for S2H: task({}), file({}), mountPoint({}), ioSize({}). Error: "
-            "{}",
-            ios.owner, path, mountPoint_, ioSize_, s);
-        return s;
-    }
-
-    IorGuard ior;
-    if (auto s = ior.Create(mountPoint_, iorEntries_, true, iorDepth_); s.Failure()) [[unlikely]]
-    {
-        UC_ERROR(
-            "Failed to create IOR for S2H: task({}), file({}), mountPoint({}), entries({}), "
-            "depth({}). Error: {}",
-            ios.owner, path, mountPoint_, iorEntries_, iorDepth_, s);
+    s = fdGuard.Register(fd);
+    if (s.Failure()) [[unlikely]] {
+        UC_ERROR("Failed to register fd({}) for file({}): {}", fd, path, s);
+        close(fd);
         return s;
     }
 
     auto offset = shardSize_ * ios.shard.index;
-    for (const auto& addr : ios.shard.addrs) {
-        if (auto s = DoIo(ior, iov, true, fd, offset, ioSize_); s.Failure()) [[unlikely]]
-        {
-            UC_ERROR(
-                "Failed to read data in S2H: task({}), file({}), offset({}), size({}). Error: {}",
-                ios.owner, path, offset, ioSize_, s);
-            return s;
-        }
+    const size_t numTensors = ios.shard.addrs.size();
 
-        std::memcpy(reinterpret_cast<void*>(addr), iov.Base(), ioSize_);
-        offset += ioSize_;
+    if (numTensors != 1) [[unlikely]] {
+        UC_ERROR("Unexpected numTensors={}, expected 1 for S2H", numTensors);
     }
 
+    int prepRes = hf3fs_prep_io(ctx->iorRead.Get(), ctx->iov.Get(), true, ctx->iov.Base(), fd,
+                                offset, ioSize_, nullptr);
+    if (prepRes < 0) [[unlikely]] {
+        UC_ERROR("Failed to prep read io: result={}, path={}", prepRes, path);
+        return Status::OsApiError(fmt::format("Failed to prep read io: {}", prepRes));
+    }
+
+    int submitRes = hf3fs_submit_ios(ctx->iorRead.Get());
+    if (submitRes < 0) [[unlikely]] {
+        UC_ERROR("Failed to submit read io: result={}, path={}", submitRes, path);
+        return Status::OsApiError(fmt::format("Failed to submit read ios: {}", submitRes));
+    }
+
+    struct hf3fs_cqe cqe;
+    int waitRes = hf3fs_wait_for_ios(ctx->iorRead.Get(), &cqe, 1, 1, nullptr);
+    if (waitRes <= 0) [[unlikely]] {
+        UC_ERROR("Failed to wait for read io: result={}, path={}", waitRes, path);
+        return Status::OsApiError(fmt::format("Failed to wait for read ios: {}", waitRes));
+    }
+
+    if (cqe.result < 0) [[unlikely]] {
+        UC_ERROR("Read operation failed: result={}, offset={}, size={}, path={}", cqe.result,
+                 offset, ioSize_, path);
+        return Status::OsApiError(fmt::format("Read operation failed: {}", cqe.result));
+    }
+
+    std::memcpy(reinterpret_cast<void*>(ios.shard.addrs[0]), ctx->iov.Base(), ioSize_);
+
+    ctx->ioCount++;
     return Status::OK();
 }
 

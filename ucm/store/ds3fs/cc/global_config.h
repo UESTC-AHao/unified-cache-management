@@ -39,7 +39,7 @@ struct Config {
     bool ioDirect{false};
     size_t streamNumber{8};
     size_t timeoutMs{30000};
-    size_t iorEntries{64};
+    size_t iorEntries{1};
     int iorDepth{1};
     int numaId{-1};
 };
