@@ -40,6 +40,7 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
     mountPoint_ = config.hf3fsMountPoint;
     iorEntries_ = config.iorEntries;
     iorDepth_ = config.iorDepth;
+    numaId_ = config.numaId;
 
     auto success = pool_.SetNWorker(config.streamNumber)
                        .SetWorkerInitFn([this](auto& ctx) { return InitWorkerContext(ctx); })
@@ -57,7 +58,7 @@ bool TransQueue::InitWorkerContext(WorkerContext*& ctx)
     try {
         ctx = new WorkerContext();
 
-        auto s = ctx->iov.Create(mountPoint_, ioSize_);
+        auto s = ctx->iov.Create(mountPoint_, ioSize_, numaId_);
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed to create IOV for worker: {}", s);
             delete ctx;
@@ -65,7 +66,7 @@ bool TransQueue::InitWorkerContext(WorkerContext*& ctx)
             return false;
         }
 
-        s = ctx->iorRead.Create(mountPoint_, iorEntries_, true, iorDepth_);
+        s = ctx->iorRead.Create(mountPoint_, iorEntries_, true, iorDepth_, numaId_);
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed to create read IOR for worker: {}", s);
             delete ctx;
@@ -73,7 +74,7 @@ bool TransQueue::InitWorkerContext(WorkerContext*& ctx)
             return false;
         }
 
-        s = ctx->iorWrite.Create(mountPoint_, iorEntries_, false, iorDepth_);
+        s = ctx->iorWrite.Create(mountPoint_, iorEntries_, false, iorDepth_, numaId_);
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed to create write IOR for worker: {}", s);
             delete ctx;
@@ -198,7 +199,6 @@ Status TransQueue::H2S(IoUnit& ios, WorkerContext* ctx)
         return Status::OsApiError(fmt::format("Write operation failed: {}", cqe.result));
     }
 
-    ctx->ioCount++;
     return Status::OK();
 }
 
@@ -264,7 +264,6 @@ Status TransQueue::S2H(IoUnit& ios, WorkerContext* ctx)
 
     std::memcpy(reinterpret_cast<void*>(ios.shard.addrs[0]), ctx->iov.Base(), ioSize_);
 
-    ctx->ioCount++;
     return Status::OK();
 }
 

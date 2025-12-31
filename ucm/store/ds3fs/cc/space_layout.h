@@ -31,9 +31,12 @@ namespace UC::Ds3fsStore {
 
 class SpaceLayout {
     std::vector<std::string> storageBackends_;
+    int32_t actualDirs_{0};
 
 public:
-    Status Setup(const std::vector<std::string>& storageBackends);
+    Status Setup(const std::vector<std::string>& storageBackends,
+                 size_t mountPointCapacityBytes, size_t blockSize,
+                 size_t maxFilesPerDir = 100000);
     std::string DataFilePath(const Detail::BlockId& blockId, bool activated) const;
     Status CommitFile(const Detail::BlockId& blockId, bool success) const;
 
@@ -43,6 +46,7 @@ private:
     Status AddFirstStorageBackend(const std::string& path);
     Status AddSecondaryStorageBackend(const std::string& path);
     std::string StorageBackend(const Detail::BlockId& blockId) const;
+    int32_t CalculateActualDirs(size_t capacity, size_t blockSize, size_t maxPerDir) const;
 };
 
 }  // namespace UC::Ds3fsStore

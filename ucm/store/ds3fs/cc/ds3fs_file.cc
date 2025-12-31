@@ -95,34 +95,4 @@ void Ds3fsFile::Close()
 
 void Ds3fsFile::Remove() { remove(path_.c_str()); }
 
-Status Ds3fsFile::Read(void* buffer, size_t size, off64_t offset)
-{
-    ssize_t nBytes = -1;
-    if (offset != -1) {
-        nBytes = pread(handle_, buffer, size, offset);
-    } else {
-        nBytes = read(handle_, buffer, size);
-    }
-    auto eno = errno;
-    if (nBytes != static_cast<ssize_t>(size)) [[unlikely]] {
-        return Status::OsApiError(std::to_string(eno));
-    }
-    return Status::OK();
-}
-
-Status Ds3fsFile::Write(const void* buffer, size_t size, off64_t offset)
-{
-    ssize_t nBytes = -1;
-    if (offset != -1) {
-        nBytes = pwrite(handle_, buffer, size, offset);
-    } else {
-        nBytes = write(handle_, buffer, size);
-    }
-    auto eno = errno;
-    if (nBytes != static_cast<ssize_t>(size)) [[unlikely]] {
-        return Status::OsApiError(std::to_string(eno));
-    }
-    return Status::OK();
-}
-
 }  // namespace UC::Ds3fsStore

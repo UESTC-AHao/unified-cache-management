@@ -32,8 +32,20 @@ namespace UC::Ds3fsStore {
 static const std::string DATA_ROOT = "data/";
 static const std::string TEMP_ROOT = "temp/";
 
-Status SpaceLayout::Setup(const std::vector<std::string>& storageBackends)
+Status SpaceLayout::Setup(const std::vector<std::string>& storageBackends,
+                          size_t mountPointCapacityBytes, size_t blockSize,
+                          size_t maxFilesPerDir)
 {
+    if (blockSize == 0 || mountPointCapacityBytes == 0) {
+        return Status::InvalidParam("invalid blockSize or capacity");
+    }
+
+    actualDirs_ = CalculateActualDirs(mountPointCapacityBytes, blockSize, maxFilesPerDir);
+
+    size_t maxFiles = mountPointCapacityBytes / blockSize;
+    UC_INFO("Mount capacity: {} bytes, block size: {}, max files: {}, dirs needed: {}",
+            mountPointCapacityBytes, blockSize, maxFiles, actualDirs_);
+
     auto status = Status::OK();
     for (auto& path : storageBackends) {
         if ((status = AddStorageBackend(path)).Failure()) { return status; }
@@ -45,7 +57,13 @@ std::string SpaceLayout::DataFilePath(const Detail::BlockId& blockId, bool activ
 {
     const auto& backend = StorageBackend(blockId);
     const auto& root = !activated ? DATA_ROOT : TEMP_ROOT;
-    return fmt::format("{}{}{:02x}", backend, root, fmt::join(blockId, ""));
+
+    static Detail::BlockIdHasher hasher;
+    int32_t dirIndex = hasher(blockId) % actualDirs_;
+
+    std::string remaining = fmt::format("{}", fmt::join(blockId.begin(), blockId.end(), ""));
+
+    return fmt::format("{}{}{:02x}/{}", backend, root, dirIndex, remaining);
 }
 
 Status SpaceLayout::CommitFile(const Detail::BlockId& blockId, bool success) const
@@ -89,6 +107,13 @@ Status SpaceLayout::AddFirstStorageBackend(const std::string& path)
         auto status = dir.MkDir();
         if (status == Status::DuplicateKey()) { status = Status::OK(); }
         if (status.Failure()) { return status; }
+
+        for (int i = 0; i < actualDirs_; i++) {
+            Ds3fsFile subdir{fmt::format("{}{:02x}", path + root, i)};
+            status = subdir.MkDir();
+            if (status == Status::DuplicateKey()) { status = Status::OK(); }
+            if (status.Failure()) { return status; }
+        }
     }
     storageBackends_.emplace_back(path);
     return Status::OK();
@@ -114,6 +139,13 @@ std::string SpaceLayout::StorageBackend(const Detail::BlockId& blockId) const
     const auto number = storageBackends_.size();
     if (number > 1) { return storageBackends_[hasher(blockId) % number]; }
     return storageBackends_.front();
+}
+
+int32_t SpaceLayout::CalculateActualDirs(size_t capacity, size_t blockSize, size_t maxPerDir) const
+{
+    size_t maxFiles = capacity / blockSize;
+    int32_t dirs = (maxFiles + maxPerDir - 1) / maxPerDir;
+    return std::max(1, dirs);
 }
 
 }  // namespace UC::Ds3fsStore

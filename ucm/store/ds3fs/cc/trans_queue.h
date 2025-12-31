@@ -58,9 +58,9 @@ private:
 
     public:
         IovGuard() = default;
-        Status Create(const std::string& mountPoint, size_t size)
+        Status Create(const std::string& mountPoint, size_t size, int numaId)
         {
-            int res = hf3fs_iovcreate(&iov_, mountPoint.c_str(), size, 0, -1);
+            int res = hf3fs_iovcreate(&iov_, mountPoint.c_str(), size, 0, numaId);
             if (res < 0) {
                 return Status::OsApiError(fmt::format("Failed to create IOV: {}", res));
             }
@@ -83,9 +83,9 @@ private:
 
     public:
         IorGuard() = default;
-        Status Create(const std::string& mountPoint, size_t entries, bool isRead, int depth)
+        Status Create(const std::string& mountPoint, size_t entries, bool isRead, int depth, int numaId)
         {
-            int res = hf3fs_iorcreate4(&ior_, mountPoint.c_str(), entries, isRead, depth, 0, -1, 0);
+            int res = hf3fs_iorcreate4(&ior_, mountPoint.c_str(), entries, isRead, depth, 0, numaId, 0);
             if (res < 0) {
                 return Status::OsApiError(fmt::format("Failed to create IOR: {}", res));
             }
@@ -144,8 +144,6 @@ private:
         IorGuard iorRead;
         IorGuard iorWrite;
 
-        size_t ioCount{0};
-
         bool initialized{false};
     };
 
@@ -159,6 +157,7 @@ private:
     std::string mountPoint_;
     size_t iorEntries_;
     int iorDepth_;
+    int numaId_;
 
 public:
     Status Setup(const Config& config, TaskIdSet* failureSet, const SpaceLayout* layout);
