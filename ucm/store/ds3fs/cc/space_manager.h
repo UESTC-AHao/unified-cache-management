@@ -21,26 +21,26 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_DS3FS_STORE_CC_SPACE_MANAGER_H
-#define UNIFIEDCACHE_DS3FS_STORE_CC_SPACE_MANAGER_H
+#ifndef UNIFIEDCACHE_SPACE_MANAGER_H
+#define UNIFIEDCACHE_SPACE_MANAGER_H
 
-#include "global_config.h"
 #include "space_layout.h"
 
-namespace UC::Ds3fsStore {
+namespace UC {
 
 class SpaceManager {
-    SpaceLayout layout_;
-
 public:
-    Status Setup(const Config& config);
-    std::vector<uint8_t> Lookup(const Detail::BlockId* blocks, size_t num);
-    const SpaceLayout* GetLayout() const { return &layout_; }
+    Status Setup(const std::vector<std::string>& storageBackends, const size_t blockSize);
+    Status NewBlock(const std::string& blockId);
+    Status CommitBlock(const std::string& blockId, bool success);
+    bool LookupBlock(const std::string& blockId) const;
+    const SpaceLayout* GetSpaceLayout() const { return &this->layout_; }
 
 private:
-    uint8_t Lookup(const Detail::BlockId* block);
+    SpaceLayout layout_;
+    size_t blockSize_;
 };
 
-}  // namespace UC::Ds3fsStore
+}  // namespace UC
 
 #endif

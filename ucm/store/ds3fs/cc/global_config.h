@@ -42,8 +42,6 @@ struct Config {
     size_t iorEntries{1};
     int iorDepth{1};
     int numaId{-1};
-    size_t mountPointCapacityBytes{0};
-    size_t maxFilesPerDir{100000};
 };
 
 }  // namespace UC::Ds3fsStore

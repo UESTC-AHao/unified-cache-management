@@ -23,75 +23,63 @@
  * */
 #include "space_layout.h"
 #include <algorithm>
+#include <array>
 #include <fmt/ranges.h>
-#include "ds3fs_file.h"
+#include "file/file.h"
 #include "logger/logger.h"
 
-namespace UC::Ds3fsStore {
+namespace UC {
 
-static const std::string DATA_ROOT = "data/";
-static const std::string TEMP_ROOT = "temp/";
-
-Status SpaceLayout::Setup(const std::vector<std::string>& storageBackends,
-                          size_t mountPointCapacityBytes, size_t blockSize, size_t maxFilesPerDir)
+Status SpaceLayout::Setup(const std::vector<std::string>& storageBackends)
 {
-    if (blockSize == 0 || mountPointCapacityBytes == 0) {
-        return Status::InvalidParam("invalid blockSize or capacity");
+    if (storageBackends.empty()) {
+        UC_ERROR("Empty backend list.");
+        return Status::InvalidParam();
     }
-
-    actualDirs_ = CalculateActualDirs(mountPointCapacityBytes, blockSize, maxFilesPerDir);
-
-    size_t maxFiles = mountPointCapacityBytes / blockSize;
-    UC_INFO("Mount capacity: {} bytes, block size: {}, max files: {}, dirs needed: {}",
-            mountPointCapacityBytes, blockSize, maxFiles, actualDirs_);
-
     auto status = Status::OK();
     for (auto& path : storageBackends) {
-        if ((status = AddStorageBackend(path)).Failure()) { return status; }
+        if ((status = this->AddStorageBackend(path)).Failure()) { return status; }
     }
     return status;
 }
 
-std::string SpaceLayout::DataFilePath(const Detail::BlockId& blockId, bool activated) const
+std::string SpaceLayout::DataFilePath(const std::string& blockId, bool activated) const
 {
     const auto& backend = StorageBackend(blockId);
-    const auto& root = !activated ? DATA_ROOT : TEMP_ROOT;
-
-    static Detail::BlockIdHasher hasher;
-    int32_t dirIndex = hasher(blockId) % actualDirs_;
-
-    std::string remaining = fmt::format("{}", fmt::join(blockId.begin(), blockId.end(), ""));
-
-    return fmt::format("{}{}{:02x}/{}", backend, root, dirIndex, remaining);
+    const auto& file = DataFileName(blockId);
+    const auto& parent = DataParentName(file, activated);
+    return fmt::format("{}{}/{}", backend, parent, file);
 }
 
-Status SpaceLayout::CommitFile(const Detail::BlockId& blockId, bool success) const
+Status SpaceLayout::Commit(const std::string& blockId, bool success) const
 {
-    const auto& activated = this->DataFilePath(blockId, true);
-    const auto& archived = this->DataFilePath(blockId, false);
-    Ds3fsFile file{activated};
-    if (success) { return file.Rename(archived); }
-    file.Remove();
-    return Status::OK();
+    const auto& backend = StorageBackend(blockId);
+    const auto& file = DataFileName(blockId);
+    const auto& activated = fmt::format("{}{}/{}", backend, TempFileRoot(), file);
+    auto s = Status::OK();
+    if (success) {
+        const auto& parent = fmt::format("{}{}", backend, DataParentName(file, false));
+        const auto& archived = fmt::format("{}/{}", parent, file);
+        if (shardDataDir_) { s = File::MkDir(parent); }
+        if (s == Status::OK() || s == Status::DuplicateKey()) {
+            s = File::Rename(activated, archived);
+        }
+    }
+    if (!success || s.Failure()) { File::Remove(activated); }
+    return s;
 }
 
-std::vector<std::string> SpaceLayout::RelativeRoots() const
-{
-    return {
-        DATA_ROOT,
-        TEMP_ROOT,
-    };
-}
+std::vector<std::string> SpaceLayout::RelativeRoots() const { return {TempFileRoot()}; }
 
 Status SpaceLayout::AddStorageBackend(const std::string& path)
 {
     auto normalizedPath = path;
     if (normalizedPath.back() != '/') { normalizedPath += '/'; }
     auto status = Status::OK();
-    if (storageBackends_.empty()) {
-        status = AddFirstStorageBackend(normalizedPath);
+    if (this->storageBackends_.empty()) {
+        status = this->AddFirstStorageBackend(normalizedPath);
     } else {
-        status = AddSecondaryStorageBackend(normalizedPath);
+        status = this->AddSecondaryStorageBackend(normalizedPath);
     }
     if (status.Failure()) {
         UC_ERROR("Failed({}) to add storage backend({}).", status, normalizedPath);
@@ -101,50 +89,55 @@ Status SpaceLayout::AddStorageBackend(const std::string& path)
 
 Status SpaceLayout::AddFirstStorageBackend(const std::string& path)
 {
-    for (const auto& root : RelativeRoots()) {
-        Ds3fsFile dir{path + root};
-        auto status = dir.MkDir();
+    for (const auto& root : this->RelativeRoots()) {
+        auto dir = File::Make(path + root);
+        if (!dir) { return Status::OutOfMemory(); }
+        auto status = dir->MkDir();
         if (status == Status::DuplicateKey()) { status = Status::OK(); }
         if (status.Failure()) { return status; }
-
-        for (int i = 0; i < actualDirs_; i++) {
-            Ds3fsFile subdir{fmt::format("{}{:02x}", path + root, i)};
-            status = subdir.MkDir();
-            if (status == Status::DuplicateKey()) { status = Status::OK(); }
-            if (status.Failure()) { return status; }
-        }
     }
-    storageBackends_.emplace_back(path);
+    this->storageBackends_.emplace_back(path);
     return Status::OK();
 }
 
 Status SpaceLayout::AddSecondaryStorageBackend(const std::string& path)
 {
-    auto iter = std::find(storageBackends_.begin(), storageBackends_.end(), path);
-    if (iter != storageBackends_.end()) { return Status::OK(); }
-    constexpr auto accessMode = Ds3fsFile::AccessMode::READ | Ds3fsFile::AccessMode::WRITE;
-    for (const auto& root : RelativeRoots()) {
-        Ds3fsFile dir{path + root};
-        auto status = dir.Access(accessMode);
-        if (status.Failure()) { return status; }
+    auto iter = std::find(this->storageBackends_.begin(), this->storageBackends_.end(), path);
+    if (iter != this->storageBackends_.end()) { return Status::OK(); }
+    constexpr auto accessMode = IFile::AccessMode::READ | IFile::AccessMode::WRITE;
+    for (const auto& root : this->RelativeRoots()) {
+        auto dir = File::Make(path + root);
+        if (!dir) { return Status::OutOfMemory(); }
+        if (dir->Access(accessMode).Failure()) { return Status::InvalidParam(); }
     }
-    storageBackends_.emplace_back(path);
+    this->storageBackends_.emplace_back(path);
     return Status::OK();
 }
 
-std::string SpaceLayout::StorageBackend(const Detail::BlockId& blockId) const
+std::string SpaceLayout::StorageBackend(const std::string& blockId) const
 {
-    static Detail::BlockIdHasher hasher;
-    const auto number = storageBackends_.size();
-    if (number > 1) { return storageBackends_[hasher(blockId) % number]; }
-    return storageBackends_.front();
+    static std::hash<std::string> hasher;
+    static const auto size = this->storageBackends_.size();
+    if (size == 1) { return storageBackends_.front(); }
+    return this->storageBackends_[hasher(blockId) % size];
 }
 
-int32_t SpaceLayout::CalculateActualDirs(size_t capacity, size_t blockSize, size_t maxPerDir) const
+std::string SpaceLayout::DataParentName(const std::string& blockFile, bool activated) const
 {
-    size_t maxFiles = capacity / blockSize;
-    int32_t dirs = (maxFiles + maxPerDir - 1) / maxPerDir;
-    return std::max(1, dirs);
+    if (activated) { return TempFileRoot(); }
+    return blockFile.substr(0, 2);
 }
 
-}  // namespace UC::Ds3fsStore
+std::string SpaceLayout::DataFileRoot() const { return "data"; }
+
+std::string SpaceLayout::TempFileRoot() const { return ".temp"; }
+
+std::string SpaceLayout::DataFileName(const std::string& blockId) const
+{
+    constexpr size_t blockIdSize = 16;
+    using BlockId = std::array<std::byte, blockIdSize>;
+    auto id = static_cast<const BlockId*>(static_cast<const void*>(blockId.data()));
+    return fmt::format("{:02x}", fmt::join(*id, ""));
+}
+
+}  // namespace UC

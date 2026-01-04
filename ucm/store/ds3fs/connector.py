@@ -47,11 +47,6 @@ class UcmDs3fsStore(UcmKVStoreBaseV1):
             if isinstance(storage_backends, list) and len(storage_backends) > 0:
                 config["hf3fs_mount_point"] = storage_backends[0]
 
-        if "mount_point_capacity_bytes" in config:
-            config["mount_point_capacity_bytes"] = self._parse_capacity(
-                config["mount_point_capacity_bytes"]
-            )
-
         key_mapping = {
             "storage_backends": "storageBackends",
             "hf3fs_mount_point": "hf3fsMountPoint",
@@ -65,8 +60,6 @@ class UcmDs3fsStore(UcmKVStoreBaseV1):
             "ior_entries": "iorEntries",
             "ior_depth": "iorDepth",
             "numa_id": "numaId",
-            "mount_point_capacity_bytes": "mountPointCapacityBytes",
-            "max_files_per_dir": "maxFilesPerDir",
         }
         self.store = ucmds3fsstore.Ds3fsStore()
         param = ucmds3fsstore.Ds3fsStore.Config()
@@ -75,18 +68,6 @@ class UcmDs3fsStore(UcmKVStoreBaseV1):
             if attr and hasattr(param, attr):
                 setattr(param, attr, value)
         self.store.Setup(param)
-
-    def _parse_capacity(self, capacity) -> int:
-        if isinstance(capacity, int):
-            return capacity
-        if isinstance(capacity, str):
-            capacity = capacity.strip().upper()
-            multipliers = {"T": 1024**4, "G": 1024**3, "M": 1024**2, "K": 1024}
-            for unit, mult in multipliers.items():
-                if capacity.endswith(unit):
-                    return int(float(capacity[:-1]) * mult)
-            return int(capacity)
-        return capacity
 
     def cc_store(self) -> int:
         return self.store.Self()

@@ -22,31 +22,56 @@
  * SOFTWARE.
  * */
 #include "space_manager.h"
-#include "ds3fs_file.h"
+#include <chrono>
+#include "file/file.h"
 #include "logger/logger.h"
 
-namespace UC::Ds3fsStore {
+namespace UC {
 
-Status SpaceManager::Setup(const Config& config)
+Status SpaceManager::Setup(const std::vector<std::string>& storageBackends, const size_t blockSize)
 {
-    return layout_.Setup(config.storageBackends, config.mountPointCapacityBytes, config.blockSize,
-                         config.maxFilesPerDir);
+    auto status = this->layout_.Setup(storageBackends);
+    if (status.Failure()) { return status; }
+    this->blockSize_ = blockSize;
+    return Status::OK();
 }
 
-std::vector<uint8_t> SpaceManager::Lookup(const Detail::BlockId* blocks, size_t num)
+Status SpaceManager::NewBlock(const std::string& blockId)
 {
-    std::vector<uint8_t> res(num);
-    for (size_t i = 0; i < num; i++) { res[i] = Lookup(blocks + i); }
-    return res;
+    const auto& activated = this->layout_.DataFilePath(blockId, true);
+    const auto& archived = this->layout_.DataFilePath(blockId, false);
+    if (File::Access(archived, IFile::AccessMode::EXIST).Success()) {
+        return Status::DuplicateKey();
+    }
+    auto file = File::Make(activated);
+    if (!file) { return Status::OutOfMemory(); }
+    auto mode = IFile::OpenFlag::CREATE | IFile::OpenFlag::EXCL | IFile::OpenFlag::READ_WRITE;
+    auto s = file->Open(mode);
+    if (s.Failure()) {
+        if (s != Status::DuplicateKey()) { return s; }
+        mode = IFile::OpenFlag::READ_WRITE;
+        if ((s = file->Open(mode)).Failure()) { return s; }
+        IFile::FileStat st;
+        if ((s = file->Stat(st)).Failure()) { return s; }
+        const auto now = std::chrono::system_clock::now();
+        const auto mtime = std::chrono::system_clock::from_time_t(st.st_mtime);
+        constexpr auto reuseBlockAge = std::chrono::seconds(300);
+        if (now - mtime <= reuseBlockAge) { return Status::DuplicateKey(); }
+    }
+    return file->Truncate(this->blockSize_);
 }
 
-uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
+Status SpaceManager::CommitBlock(const std::string& blockId, bool success)
 {
-    const auto& path = layout_.DataFilePath(*block, false);
-    Ds3fsFile file{path};
+    return this->layout_.Commit(blockId, success);
+}
+
+bool SpaceManager::LookupBlock(const std::string& blockId) const
+{
+    const auto& path = this->layout_.DataFilePath(blockId, false);
     constexpr auto mode =
-        Ds3fsFile::AccessMode::EXIST | Ds3fsFile::AccessMode::READ | Ds3fsFile::AccessMode::WRITE;
-    auto s = file.Access(mode);
+        IFile::AccessMode::EXIST | IFile::AccessMode::READ | IFile::AccessMode::WRITE;
+    auto s = File::Access(path, mode);
     if (s.Failure()) {
         if (s != Status::NotFound()) { UC_ERROR("Failed({}) to access file({}).", s, path); }
         return false;
@@ -54,4 +79,4 @@ uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
     return true;
 }
 
-}  // namespace UC::Ds3fsStore
+}  // namespace UC

@@ -21,33 +21,36 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_DS3FS_STORE_CC_SPACE_LAYOUT_H
-#define UNIFIEDCACHE_DS3FS_STORE_CC_SPACE_LAYOUT_H
+#ifndef UNIFIEDCACHE_SPACE_LAYOUT_H
+#define UNIFIEDCACHE_SPACE_LAYOUT_H
 
+#include <string>
+#include <vector>
 #include "status/status.h"
-#include "type/types.h"
 
-namespace UC::Ds3fsStore {
+namespace UC {
 
 class SpaceLayout {
-    std::vector<std::string> storageBackends_;
-    int32_t actualDirs_{0};
-
 public:
-    Status Setup(const std::vector<std::string>& storageBackends, size_t mountPointCapacityBytes,
-                 size_t blockSize, size_t maxFilesPerDir = 100000);
-    std::string DataFilePath(const Detail::BlockId& blockId, bool activated) const;
-    Status CommitFile(const Detail::BlockId& blockId, bool success) const;
+    Status Setup(const std::vector<std::string>& storageBackends);
+    std::string DataFilePath(const std::string& blockId, bool activated) const;
+    Status Commit(const std::string& blockId, bool success) const;
 
 private:
     std::vector<std::string> RelativeRoots() const;
     Status AddStorageBackend(const std::string& path);
     Status AddFirstStorageBackend(const std::string& path);
     Status AddSecondaryStorageBackend(const std::string& path);
-    std::string StorageBackend(const Detail::BlockId& blockId) const;
-    int32_t CalculateActualDirs(size_t capacity, size_t blockSize, size_t maxPerDir) const;
+    std::string StorageBackend(const std::string& blockId) const;
+    std::string DataParentName(const std::string& blockFile, bool activated) const;
+    std::string DataFileRoot() const;
+    std::string TempFileRoot() const;
+    std::string DataFileName(const std::string& blockId) const;
+
+private:
+    std::vector<std::string> storageBackends_;
 };
 
-}  // namespace UC::Ds3fsStore
+}  // namespace UC
 
 #endif
