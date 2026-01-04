@@ -151,7 +151,7 @@ private:
 
     TaskIdSet* failureSet_;
     const SpaceLayout* layout_;
-    ThreadPool<IoUnit, WorkerContext*> pool_;
+    ThreadPool<IoUnit, std::unique_ptr<WorkerContext>> pool_;
     size_t ioSize_;
     size_t shardSize_;
     size_t nShardPerBlock_;
@@ -166,11 +166,11 @@ public:
     void Push(TaskPtr task, WaiterPtr waiter);
 
 private:
-    bool InitWorkerContext(WorkerContext*& ctx);
-    void CleanupWorkerContext(WorkerContext*& ctx);
-    void Worker(IoUnit& ios, WorkerContext* ctx);
-    Status H2S(IoUnit& ios, WorkerContext* ctx);
-    Status S2H(IoUnit& ios, WorkerContext* ctx);
+    bool InitWorkerContext(std::unique_ptr<WorkerContext>& ctx);
+    void CleanupWorkerContext(std::unique_ptr<WorkerContext>& ctx);
+    void Worker(IoUnit& ios, std::unique_ptr<WorkerContext>& ctx);
+    Status H2S(IoUnit& ios, std::unique_ptr<WorkerContext>& ctx);
+    Status S2H(IoUnit& ios, std::unique_ptr<WorkerContext>& ctx);
 };
 
 }  // namespace UC::Ds3fsStore

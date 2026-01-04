@@ -53,15 +53,14 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
     return Status::OK();
 }
 
-bool TransQueue::InitWorkerContext(WorkerContext*& ctx)
+bool TransQueue::InitWorkerContext(std::unique_ptr<WorkerContext>& ctx)
 {
     try {
-        ctx = new WorkerContext();
+        ctx = std::make_unique<WorkerContext>();
 
         auto s = ctx->iov.Create(mountPoint_, ioSize_, numaId_);
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed to create IOV for worker: {}", s);
-            delete ctx;
             ctx = nullptr;
             return false;
         }
@@ -69,7 +68,6 @@ bool TransQueue::InitWorkerContext(WorkerContext*& ctx)
         s = ctx->iorRead.Create(mountPoint_, iorEntries_, true, iorDepth_, numaId_);
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed to create read IOR for worker: {}", s);
-            delete ctx;
             ctx = nullptr;
             return false;
         }
@@ -77,7 +75,6 @@ bool TransQueue::InitWorkerContext(WorkerContext*& ctx)
         s = ctx->iorWrite.Create(mountPoint_, iorEntries_, false, iorDepth_, numaId_);
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed to create write IOR for worker: {}", s);
-            delete ctx;
             ctx = nullptr;
             return false;
         }
@@ -87,20 +84,14 @@ bool TransQueue::InitWorkerContext(WorkerContext*& ctx)
 
     } catch (const std::exception& e) {
         UC_ERROR("Exception during worker context init: {}", e.what());
-        if (ctx) {
-            delete ctx;
-            ctx = nullptr;
-        }
+        ctx = nullptr;
         return false;
     }
 }
 
-void TransQueue::CleanupWorkerContext(WorkerContext*& ctx)
+void TransQueue::CleanupWorkerContext(std::unique_ptr<WorkerContext>& ctx)
 {
-    if (ctx) {
-        delete ctx;
-        ctx = nullptr;
-    }
+    ctx = nullptr;
 }
 
 void TransQueue::Push(TaskPtr task, WaiterPtr waiter)

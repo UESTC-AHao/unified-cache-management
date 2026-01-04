@@ -40,7 +40,7 @@ private:
     Status AddStorageBackend(const std::string& path);
     Status AddFirstStorageBackend(const std::string& path);
     Status AddSecondaryStorageBackend(const std::string& path);
-    std::string StorageBackend(const std::string& blockId) const;
+    std::string StorageBackend(const Detail::BlockId& blockId) const;
     std::string DataParentName(const std::string& blockFile, bool activated) const;
     std::string DataFileRoot() const;
     std::string TempFileRoot() const;

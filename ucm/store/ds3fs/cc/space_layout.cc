@@ -59,15 +59,15 @@ Status SpaceLayout::CommitFile(const Detail::BlockId& blockId, bool success) con
     if (success) {
         const auto& parent = fmt::format("{}{}", backend, DataParentName(file, false));
         const auto& archived = fmt::format("{}/{}", parent, file);
-        Ds3fsFile dir{parent};
+        Ds3fsFile dir(parent);
         s = dir.MkDir();
         if (s == Status::OK() || s == Status::DuplicateKey()) {
-            Ds3fsFile activatedFile{activated};
+            Ds3fsFile activatedFile(activated);
             s = activatedFile.Rename(archived);
         }
     }
     if (!success || s.Failure()) {
-        Ds3fsFile activatedFile{activated};
+        Ds3fsFile activatedFile(activated);
         activatedFile.Remove();
     }
     return s;
@@ -94,7 +94,7 @@ Status SpaceLayout::AddStorageBackend(const std::string& path)
 Status SpaceLayout::AddFirstStorageBackend(const std::string& path)
 {
     for (const auto& root : this->RelativeRoots()) {
-        Ds3fsFile dir{path + root};
+        Ds3fsFile dir(path + root);
         auto status = dir.MkDir();
         if (status == Status::DuplicateKey()) { status = Status::OK(); }
         if (status.Failure()) { return status; }
@@ -109,7 +109,7 @@ Status SpaceLayout::AddSecondaryStorageBackend(const std::string& path)
     if (iter != this->storageBackends_.end()) { return Status::OK(); }
     constexpr auto accessMode = Ds3fsFile::AccessMode::READ | Ds3fsFile::AccessMode::WRITE;
     for (const auto& root : this->RelativeRoots()) {
-        Ds3fsFile dir{path + root};
+        Ds3fsFile dir(path + root);
         auto status = dir.Access(accessMode);
         if (status.Failure()) { return status; }
     }
@@ -120,7 +120,7 @@ Status SpaceLayout::AddSecondaryStorageBackend(const std::string& path)
 std::string SpaceLayout::StorageBackend(const Detail::BlockId& blockId) const
 {
     static std::hash<std::string> hasher;
-    static const auto size = this->storageBackends_.size();
+    const auto size = this->storageBackends_.size();
     std::string blockIdStr = fmt::format("{:02x}", fmt::join(blockId, ""));
     if (size == 1) { return storageBackends_.front(); }
     return this->storageBackends_[hasher(blockIdStr) % size];
