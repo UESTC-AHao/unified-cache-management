@@ -24,23 +24,23 @@
 #ifndef UNIFIEDCACHE_SPACE_MANAGER_H
 #define UNIFIEDCACHE_SPACE_MANAGER_H
 
+#include "global_config.h"
 #include "space_layout.h"
 
-namespace UC {
+namespace UC::Ds3fsStore {
 
 class SpaceManager {
+    SpaceLayout layout_;
+
 public:
-    Status Setup(const std::vector<std::string>& storageBackends, const size_t blockSize);
-    Status NewBlock(const std::string& blockId);
-    Status CommitBlock(const std::string& blockId, bool success);
-    bool LookupBlock(const std::string& blockId) const;
-    const SpaceLayout* GetSpaceLayout() const { return &this->layout_; }
+    Status Setup(const Config& config);
+    std::vector<uint8_t> Lookup(const Detail::BlockId* blocks, size_t num);
+    const SpaceLayout* GetLayout() const { return &layout_; }
 
 private:
-    SpaceLayout layout_;
-    size_t blockSize_;
+    uint8_t Lookup(const Detail::BlockId* block);
 };
 
-}  // namespace UC
+}  // namespace UC::Ds3fsStore
 
 #endif

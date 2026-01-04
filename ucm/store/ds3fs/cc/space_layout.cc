@@ -23,12 +23,11 @@
  * */
 #include "space_layout.h"
 #include <algorithm>
-#include <array>
 #include <fmt/ranges.h>
-#include "file/file.h"
+#include "ds3fs_file.h"
 #include "logger/logger.h"
 
-namespace UC {
+namespace UC::Ds3fsStore {
 
 Status SpaceLayout::Setup(const std::vector<std::string>& storageBackends)
 {
@@ -43,7 +42,7 @@ Status SpaceLayout::Setup(const std::vector<std::string>& storageBackends)
     return status;
 }
 
-std::string SpaceLayout::DataFilePath(const std::string& blockId, bool activated) const
+std::string SpaceLayout::DataFilePath(const Detail::BlockId& blockId, bool activated) const
 {
     const auto& backend = StorageBackend(blockId);
     const auto& file = DataFileName(blockId);
@@ -51,7 +50,7 @@ std::string SpaceLayout::DataFilePath(const std::string& blockId, bool activated
     return fmt::format("{}{}/{}", backend, parent, file);
 }
 
-Status SpaceLayout::Commit(const std::string& blockId, bool success) const
+Status SpaceLayout::CommitFile(const Detail::BlockId& blockId, bool success) const
 {
     const auto& backend = StorageBackend(blockId);
     const auto& file = DataFileName(blockId);
@@ -60,12 +59,17 @@ Status SpaceLayout::Commit(const std::string& blockId, bool success) const
     if (success) {
         const auto& parent = fmt::format("{}{}", backend, DataParentName(file, false));
         const auto& archived = fmt::format("{}/{}", parent, file);
-        if (shardDataDir_) { s = File::MkDir(parent); }
+        Ds3fsFile dir{parent};
+        s = dir.MkDir();
         if (s == Status::OK() || s == Status::DuplicateKey()) {
-            s = File::Rename(activated, archived);
+            Ds3fsFile activatedFile{activated};
+            s = activatedFile.Rename(archived);
         }
     }
-    if (!success || s.Failure()) { File::Remove(activated); }
+    if (!success || s.Failure()) {
+        Ds3fsFile activatedFile{activated};
+        activatedFile.Remove();
+    }
     return s;
 }
 
@@ -90,9 +94,8 @@ Status SpaceLayout::AddStorageBackend(const std::string& path)
 Status SpaceLayout::AddFirstStorageBackend(const std::string& path)
 {
     for (const auto& root : this->RelativeRoots()) {
-        auto dir = File::Make(path + root);
-        if (!dir) { return Status::OutOfMemory(); }
-        auto status = dir->MkDir();
+        Ds3fsFile dir{path + root};
+        auto status = dir.MkDir();
         if (status == Status::DuplicateKey()) { status = Status::OK(); }
         if (status.Failure()) { return status; }
     }
@@ -104,22 +107,23 @@ Status SpaceLayout::AddSecondaryStorageBackend(const std::string& path)
 {
     auto iter = std::find(this->storageBackends_.begin(), this->storageBackends_.end(), path);
     if (iter != this->storageBackends_.end()) { return Status::OK(); }
-    constexpr auto accessMode = IFile::AccessMode::READ | IFile::AccessMode::WRITE;
+    constexpr auto accessMode = Ds3fsFile::AccessMode::READ | Ds3fsFile::AccessMode::WRITE;
     for (const auto& root : this->RelativeRoots()) {
-        auto dir = File::Make(path + root);
-        if (!dir) { return Status::OutOfMemory(); }
-        if (dir->Access(accessMode).Failure()) { return Status::InvalidParam(); }
+        Ds3fsFile dir{path + root};
+        auto status = dir.Access(accessMode);
+        if (status.Failure()) { return status; }
     }
     this->storageBackends_.emplace_back(path);
     return Status::OK();
 }
 
-std::string SpaceLayout::StorageBackend(const std::string& blockId) const
+std::string SpaceLayout::StorageBackend(const Detail::BlockId& blockId) const
 {
     static std::hash<std::string> hasher;
     static const auto size = this->storageBackends_.size();
+    std::string blockIdStr = fmt::format("{:02x}", fmt::join(blockId, ""));
     if (size == 1) { return storageBackends_.front(); }
-    return this->storageBackends_[hasher(blockId) % size];
+    return this->storageBackends_[hasher(blockIdStr) % size];
 }
 
 std::string SpaceLayout::DataParentName(const std::string& blockFile, bool activated) const
@@ -132,12 +136,9 @@ std::string SpaceLayout::DataFileRoot() const { return "data"; }
 
 std::string SpaceLayout::TempFileRoot() const { return ".temp"; }
 
-std::string SpaceLayout::DataFileName(const std::string& blockId) const
+std::string SpaceLayout::DataFileName(const Detail::BlockId& blockId) const
 {
-    constexpr size_t blockIdSize = 16;
-    using BlockId = std::array<std::byte, blockIdSize>;
-    auto id = static_cast<const BlockId*>(static_cast<const void*>(blockId.data()));
-    return fmt::format("{:02x}", fmt::join(*id, ""));
+    return fmt::format("{:02x}", fmt::join(blockId, ""));
 }
 
-}  // namespace UC
+}  // namespace UC::Ds3fsStore

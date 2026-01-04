@@ -21,20 +21,19 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_SPACE_LAYOUT_H
-#define UNIFIEDCACHE_SPACE_LAYOUT_H
+#ifndef UNIFIEDCACHE_DS3FS_SPACE_LAYOUT_H
+#define UNIFIEDCACHE_DS3FS_SPACE_LAYOUT_H
 
-#include <string>
-#include <vector>
 #include "status/status.h"
+#include "type/types.h"
 
-namespace UC {
+namespace UC::Ds3fsStore {
 
 class SpaceLayout {
 public:
     Status Setup(const std::vector<std::string>& storageBackends);
-    std::string DataFilePath(const std::string& blockId, bool activated) const;
-    Status Commit(const std::string& blockId, bool success) const;
+    std::string DataFilePath(const Detail::BlockId& blockId, bool activated) const;
+    Status CommitFile(const Detail::BlockId& blockId, bool success) const;
 
 private:
     std::vector<std::string> RelativeRoots() const;
@@ -45,12 +44,12 @@ private:
     std::string DataParentName(const std::string& blockFile, bool activated) const;
     std::string DataFileRoot() const;
     std::string TempFileRoot() const;
-    std::string DataFileName(const std::string& blockId) const;
+    std::string DataFileName(const Detail::BlockId& blockId) const;
 
 private:
     std::vector<std::string> storageBackends_;
 };
 
-}  // namespace UC
+}  // namespace UC::Ds3fsStore
 
 #endif
