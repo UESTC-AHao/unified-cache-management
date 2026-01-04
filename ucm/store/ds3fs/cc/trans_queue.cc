@@ -89,10 +89,7 @@ bool TransQueue::InitWorkerContext(std::unique_ptr<WorkerContext>& ctx)
     }
 }
 
-void TransQueue::CleanupWorkerContext(std::unique_ptr<WorkerContext>& ctx)
-{
-    ctx = nullptr;
-}
+void TransQueue::CleanupWorkerContext(std::unique_ptr<WorkerContext>& ctx) { ctx = nullptr; }
 
 void TransQueue::Push(TaskPtr task, WaiterPtr waiter)
 {
@@ -138,59 +135,12 @@ Status TransQueue::H2S(IoUnit& ios, const std::unique_ptr<WorkerContext>& ctx)
     auto flags = Ds3fsFile::OpenFlag::CREATE | Ds3fsFile::OpenFlag::WRITE_ONLY;
     if (ioDirect_) { flags |= Ds3fsFile::OpenFlag::DIRECT; }
 
-    Ds3fsFile file{path};
-    auto s = file.Open(flags);
-    if (s.Failure()) [[unlikely]] {
-        UC_ERROR("Failed to open file({}): {}", path, s);
-        return s;
-    }
-
-    int fd = file.ReleaseHandle();
-
-    FdGuard fdGuard;
-    s = fdGuard.Register(fd);
-    if (s.Failure()) [[unlikely]] {
-        UC_ERROR("Failed to register fd({}) for file({}): {}", fd, path, s);
-        close(fd);
-        return s;
-    }
+    int fd;
+    auto s = OpenAndRegisterFile(path, flags, fd);
+    if (s.Failure()) { return s; }
 
     auto offset = shardSize_ * ios.shard.index;
-    const size_t numTensors = ios.shard.addrs.size();
-
-    if (numTensors != 1) [[unlikely]] {
-        UC_ERROR("Unexpected numTensors={}, expected 1 for H2S", numTensors);
-    }
-
-    std::memcpy(ctx->iov.Base(), reinterpret_cast<const void*>(ios.shard.addrs[0]), ioSize_);
-
-    int prepRes = hf3fs_prep_io(ctx->iorWrite.Get(), ctx->iov.Get(), false, ctx->iov.Base(), fd,
-                                offset, ioSize_, nullptr);
-    if (prepRes < 0) [[unlikely]] {
-        UC_ERROR("Failed to prep write io: result={}, path={}", prepRes, path);
-        return Status::OsApiError(fmt::format("Failed to prep write io: {}", prepRes));
-    }
-
-    int submitRes = hf3fs_submit_ios(ctx->iorWrite.Get());
-    if (submitRes < 0) [[unlikely]] {
-        UC_ERROR("Failed to submit write io: result={}, path={}", submitRes, path);
-        return Status::OsApiError(fmt::format("Failed to submit write ios: {}", submitRes));
-    }
-
-    struct hf3fs_cqe cqe;
-    int waitRes = hf3fs_wait_for_ios(ctx->iorWrite.Get(), &cqe, 1, 1, nullptr);
-    if (waitRes <= 0) [[unlikely]] {
-        UC_ERROR("Failed to wait for write io: result={}, path={}", waitRes, path);
-        return Status::OsApiError(fmt::format("Failed to wait for write ios: {}", waitRes));
-    }
-
-    if (cqe.result < 0) [[unlikely]] {
-        UC_ERROR("Write operation failed: result={}, offset={}, size={}, path={}", cqe.result,
-                 offset, ioSize_, path);
-        return Status::OsApiError(fmt::format("Write operation failed: {}", cqe.result));
-    }
-
-    return Status::OK();
+    return DoIoTransfer(ctx, fd, offset, false, ios);
 }
 
 Status TransQueue::S2H(IoUnit& ios, const std::unique_ptr<WorkerContext>& ctx)
@@ -203,6 +153,16 @@ Status TransQueue::S2H(IoUnit& ios, const std::unique_ptr<WorkerContext>& ctx)
     auto flags = Ds3fsFile::OpenFlag::READ_ONLY;
     if (ioDirect_) { flags |= Ds3fsFile::OpenFlag::DIRECT; }
 
+    int fd;
+    auto s = OpenAndRegisterFile(path, flags, fd);
+    if (s.Failure()) { return s; }
+
+    auto offset = shardSize_ * ios.shard.index;
+    return DoIoTransfer(ctx, fd, offset, true, ios);
+}
+
+Status TransQueue::OpenAndRegisterFile(const std::string& path, uint32_t flags, int& fd)
+{
     Ds3fsFile file{path};
     auto s = file.Open(flags);
     if (s.Failure()) [[unlikely]] {
@@ -210,51 +170,85 @@ Status TransQueue::S2H(IoUnit& ios, const std::unique_ptr<WorkerContext>& ctx)
         return s;
     }
 
-    int fd = file.ReleaseHandle();
+    fd = file.Handle();
 
     FdGuard fdGuard;
     s = fdGuard.Register(fd);
     if (s.Failure()) [[unlikely]] {
         UC_ERROR("Failed to register fd({}) for file({}): {}", fd, path, s);
-        close(fd);
         return s;
     }
 
-    auto offset = shardSize_ * ios.shard.index;
-    const size_t numTensors = ios.shard.addrs.size();
+    return Status::OK();
+}
 
-    if (numTensors != 1) [[unlikely]] {
-        UC_ERROR("Unexpected numTensors={}, expected 1 for S2H", numTensors);
+Status TransQueue::DoIoTransfer(const std::unique_ptr<WorkerContext>& ctx, int fd, size_t offset,
+                                bool isRead, IoUnit& ios)
+{
+    if (isRead) {
+        int prepRes = hf3fs_prep_io(ctx->iorRead.Get(), ctx->iov.Get(), true, ctx->iov.Base(), fd,
+                                    offset, ioSize_, nullptr);
+        if (prepRes < 0) [[unlikely]] {
+            UC_ERROR("Failed to prep read io: result={}", prepRes);
+            return Status::OsApiError(fmt::format("Failed to prep read io: {}", prepRes));
+        }
+
+        int submitRes = hf3fs_submit_ios(ctx->iorRead.Get());
+        if (submitRes < 0) [[unlikely]] {
+            UC_ERROR("Failed to submit read io: result={}", submitRes);
+            return Status::OsApiError(fmt::format("Failed to submit read ios: {}", submitRes));
+        }
+
+        struct hf3fs_cqe cqe;
+        int waitRes = hf3fs_wait_for_ios(ctx->iorRead.Get(), &cqe, 1, 1, nullptr);
+        if (waitRes <= 0) [[unlikely]] {
+            UC_ERROR("Failed to wait for read io: result={}", waitRes);
+            return Status::OsApiError(fmt::format("Failed to wait for read ios: {}", waitRes));
+        }
+
+        auto s = CheckIoResult(cqe, layout_->DataFilePath(ios.shard.owner, false), offset, true);
+        if (s.Failure()) { return s; }
+
+        std::memcpy(reinterpret_cast<void*>(ios.shard.addrs[0]), ctx->iov.Base(), ioSize_);
+    } else {
+        std::memcpy(ctx->iov.Base(), reinterpret_cast<const void*>(ios.shard.addrs[0]), ioSize_);
+
+        int prepRes = hf3fs_prep_io(ctx->iorWrite.Get(), ctx->iov.Get(), false, ctx->iov.Base(), fd,
+                                    offset, ioSize_, nullptr);
+        if (prepRes < 0) [[unlikely]] {
+            UC_ERROR("Failed to prep write io: result={}", prepRes);
+            return Status::OsApiError(fmt::format("Failed to prep write io: {}", prepRes));
+        }
+
+        int submitRes = hf3fs_submit_ios(ctx->iorWrite.Get());
+        if (submitRes < 0) [[unlikely]] {
+            UC_ERROR("Failed to submit write io: result={}", submitRes);
+            return Status::OsApiError(fmt::format("Failed to submit write ios: {}", submitRes));
+        }
+
+        struct hf3fs_cqe cqe;
+        int waitRes = hf3fs_wait_for_ios(ctx->iorWrite.Get(), &cqe, 1, 1, nullptr);
+        if (waitRes <= 0) [[unlikely]] {
+            UC_ERROR("Failed to wait for write io: result={}", waitRes);
+            return Status::OsApiError(fmt::format("Failed to wait for write ios: {}", waitRes));
+        }
+
+        auto s = CheckIoResult(cqe, layout_->DataFilePath(ios.shard.owner, true), offset, false);
+        if (s.Failure()) { return s; }
     }
 
-    int prepRes = hf3fs_prep_io(ctx->iorRead.Get(), ctx->iov.Get(), true, ctx->iov.Base(), fd,
-                                offset, ioSize_, nullptr);
-    if (prepRes < 0) [[unlikely]] {
-        UC_ERROR("Failed to prep read io: result={}, path={}", prepRes, path);
-        return Status::OsApiError(fmt::format("Failed to prep read io: {}", prepRes));
-    }
+    return Status::OK();
+}
 
-    int submitRes = hf3fs_submit_ios(ctx->iorRead.Get());
-    if (submitRes < 0) [[unlikely]] {
-        UC_ERROR("Failed to submit read io: result={}, path={}", submitRes, path);
-        return Status::OsApiError(fmt::format("Failed to submit read ios: {}", submitRes));
-    }
-
-    struct hf3fs_cqe cqe;
-    int waitRes = hf3fs_wait_for_ios(ctx->iorRead.Get(), &cqe, 1, 1, nullptr);
-    if (waitRes <= 0) [[unlikely]] {
-        UC_ERROR("Failed to wait for read io: result={}, path={}", waitRes, path);
-        return Status::OsApiError(fmt::format("Failed to wait for read ios: {}", waitRes));
-    }
-
+Status TransQueue::CheckIoResult(const hf3fs_cqe& cqe, const std::string& path, size_t offset,
+                                 bool isRead)
+{
     if (cqe.result < 0) [[unlikely]] {
-        UC_ERROR("Read operation failed: result={}, offset={}, size={}, path={}", cqe.result,
+        const char* op = isRead ? "Read" : "Write";
+        UC_ERROR("{} operation failed: result={}, offset={}, size={}, path={}", op, cqe.result,
                  offset, ioSize_, path);
-        return Status::OsApiError(fmt::format("Read operation failed: {}", cqe.result));
+        return Status::OsApiError(fmt::format("{} operation failed: {}", op, cqe.result));
     }
-
-    std::memcpy(reinterpret_cast<void*>(ios.shard.addrs[0]), ctx->iov.Base(), ioSize_);
-
     return Status::OK();
 }
 

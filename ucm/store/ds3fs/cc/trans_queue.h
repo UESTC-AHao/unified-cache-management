@@ -126,19 +126,6 @@ private:
         }
         FdGuard(const FdGuard&) = delete;
         FdGuard& operator=(const FdGuard&) = delete;
-        FdGuard(FdGuard&& other) noexcept : fd_(other.fd_) { other.fd_ = -1; }
-        FdGuard& operator=(FdGuard&& other) noexcept
-        {
-            if (this != &other) {
-                if (fd_ >= 0) {
-                    hf3fs_dereg_fd(fd_);
-                    close(fd_);
-                }
-                fd_ = other.fd_;
-                other.fd_ = -1;
-            }
-            return *this;
-        }
     };
 
     struct WorkerContext {
@@ -171,6 +158,11 @@ private:
     void Worker(IoUnit& ios, const std::unique_ptr<WorkerContext>& ctx);
     Status H2S(IoUnit& ios, const std::unique_ptr<WorkerContext>& ctx);
     Status S2H(IoUnit& ios, const std::unique_ptr<WorkerContext>& ctx);
+    Status OpenAndRegisterFile(const std::string& path, uint32_t flags, int& fd);
+    Status DoIoTransfer(const std::unique_ptr<WorkerContext>& ctx, int fd, size_t offset,
+                        bool isRead, IoUnit& ios);
+    Status CheckIoResult(const hf3fs_cqe& cqe, const std::string& path, size_t offset,
+                         bool isRead);
 };
 
 }  // namespace UC::Ds3fsStore

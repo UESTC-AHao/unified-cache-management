@@ -40,8 +40,8 @@ struct Config {
     size_t streamNumber{8};
     size_t timeoutMs{30000};
     size_t iorEntries{1};
-    int iorDepth{1};
-    int numaId{-1};
+    int32_t iorDepth{1};
+    int32_t numaId{-1};
 };
 
 }  // namespace UC::Ds3fsStore

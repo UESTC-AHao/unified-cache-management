@@ -56,12 +56,6 @@ public:
     ~Ds3fsFile();
     const std::string& Path() const { return path_; }
     int32_t Handle() const { return handle_; }
-    int32_t ReleaseHandle()
-    {
-        int32_t fd = handle_;
-        handle_ = -1;
-        return fd;
-    }
     Status MkDir();
     Status RmDir();
     Status Rename(const std::string& newName);
