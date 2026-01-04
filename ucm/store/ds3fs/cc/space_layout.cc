@@ -33,8 +33,7 @@ static const std::string DATA_ROOT = "data/";
 static const std::string TEMP_ROOT = "temp/";
 
 Status SpaceLayout::Setup(const std::vector<std::string>& storageBackends,
-                          size_t mountPointCapacityBytes, size_t blockSize,
-                          size_t maxFilesPerDir)
+                          size_t mountPointCapacityBytes, size_t blockSize, size_t maxFilesPerDir)
 {
     if (blockSize == 0 || mountPointCapacityBytes == 0) {
         return Status::InvalidParam("invalid blockSize or capacity");

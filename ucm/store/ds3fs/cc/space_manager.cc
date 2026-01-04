@@ -29,8 +29,8 @@ namespace UC::Ds3fsStore {
 
 Status SpaceManager::Setup(const Config& config)
 {
-    return layout_.Setup(config.storageBackends, config.mountPointCapacityBytes,
-                         config.blockSize, config.maxFilesPerDir);
+    return layout_.Setup(config.storageBackends, config.mountPointCapacityBytes, config.blockSize,
+                         config.maxFilesPerDir);
 }
 
 std::vector<uint8_t> SpaceManager::Lookup(const Detail::BlockId* blocks, size_t num)

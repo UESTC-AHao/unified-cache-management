@@ -83,9 +83,11 @@ private:
 
     public:
         IorGuard() = default;
-        Status Create(const std::string& mountPoint, size_t entries, bool isRead, int depth, int numaId)
+        Status Create(const std::string& mountPoint, size_t entries, bool isRead, int depth,
+                      int numaId)
         {
-            int res = hf3fs_iorcreate4(&ior_, mountPoint.c_str(), entries, isRead, depth, 0, numaId, 0);
+            int res =
+                hf3fs_iorcreate4(&ior_, mountPoint.c_str(), entries, isRead, depth, 0, numaId, 0);
             if (res < 0) {
                 return Status::OsApiError(fmt::format("Failed to create IOR: {}", res));
             }

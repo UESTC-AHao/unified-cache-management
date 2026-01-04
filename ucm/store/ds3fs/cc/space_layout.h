@@ -34,9 +34,8 @@ class SpaceLayout {
     int32_t actualDirs_{0};
 
 public:
-    Status Setup(const std::vector<std::string>& storageBackends,
-                 size_t mountPointCapacityBytes, size_t blockSize,
-                 size_t maxFilesPerDir = 100000);
+    Status Setup(const std::vector<std::string>& storageBackends, size_t mountPointCapacityBytes,
+                 size_t blockSize, size_t maxFilesPerDir = 100000);
     std::string DataFilePath(const Detail::BlockId& blockId, bool activated) const;
     Status CommitFile(const Detail::BlockId& blockId, bool success) const;
 
