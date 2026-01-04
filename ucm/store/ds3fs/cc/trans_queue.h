@@ -168,9 +168,9 @@ public:
 private:
     bool InitWorkerContext(std::unique_ptr<WorkerContext>& ctx);
     void CleanupWorkerContext(std::unique_ptr<WorkerContext>& ctx);
-    void Worker(IoUnit& ios, std::unique_ptr<WorkerContext>& ctx);
-    Status H2S(IoUnit& ios, std::unique_ptr<WorkerContext>& ctx);
-    Status S2H(IoUnit& ios, std::unique_ptr<WorkerContext>& ctx);
+    void Worker(IoUnit& ios, const std::unique_ptr<WorkerContext>& ctx);
+    Status H2S(IoUnit& ios, const std::unique_ptr<WorkerContext>& ctx);
+    Status S2H(IoUnit& ios, const std::unique_ptr<WorkerContext>& ctx);
 };
 
 }  // namespace UC::Ds3fsStore

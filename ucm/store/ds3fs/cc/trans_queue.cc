@@ -105,7 +105,7 @@ void TransQueue::Push(TaskPtr task, WaiterPtr waiter)
     pool_.Push(ios);
 }
 
-void TransQueue::Worker(IoUnit& ios, WorkerContext* ctx)
+void TransQueue::Worker(IoUnit& ios, const std::unique_ptr<WorkerContext>& ctx)
 {
     if (ios.firstIo) {
         auto wait = NowTime::Now() - ios.waiter->startTp;
@@ -128,7 +128,7 @@ void TransQueue::Worker(IoUnit& ios, WorkerContext* ctx)
     ios.waiter->Done();
 }
 
-Status TransQueue::H2S(IoUnit& ios, WorkerContext* ctx)
+Status TransQueue::H2S(IoUnit& ios, const std::unique_ptr<WorkerContext>& ctx)
 {
     if (!ctx || !ctx->initialized) [[unlikely]] {
         return Status::Error("Worker context not initialized");
@@ -193,7 +193,7 @@ Status TransQueue::H2S(IoUnit& ios, WorkerContext* ctx)
     return Status::OK();
 }
 
-Status TransQueue::S2H(IoUnit& ios, WorkerContext* ctx)
+Status TransQueue::S2H(IoUnit& ios, const std::unique_ptr<WorkerContext>& ctx)
 {
     if (!ctx || !ctx->initialized) [[unlikely]] {
         return Status::Error("Worker context not initialized");
