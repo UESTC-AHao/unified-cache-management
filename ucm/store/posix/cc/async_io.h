@@ -21,49 +21,42 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_POSIX_STORE_CC_TRANS_QUEUE_H
-#define UNIFIEDCACHE_POSIX_STORE_CC_TRANS_QUEUE_H
+#ifndef UNIFIEDCACHE_POSIX_STORE_CC_ASYNC_IO_H
+#define UNIFIEDCACHE_POSIX_STORE_CC_ASYNC_IO_H
 
-#include "global_config.h"
-#include "space_layout.h"
-#include "template/hashset.h"
-#include "thread/latch.h"
-#include "thread/thread_pool.h"
-#include "trans_task.h"
-#include "async_io.h"
+#include "status/status.h"
+#include <liburing.h>
+#include <vector>
 
 namespace UC::PosixStore {
 
-class TransQueue {
-    using TaskIdSet = HashSet<Detail::TaskHandle>;
-    using TaskPtr = std::shared_ptr<TransTask>;
-    using WaiterPtr = std::shared_ptr<Latch>;
-
+class AsyncIOQueue {
 private:
-    struct IoUnit {
-        Detail::TaskHandle owner;
-        TransTask::Type type;
-        Detail::Shard shard;
-        std::shared_ptr<Latch> waiter;
-        bool firstIo{false};
-    };
-    TaskIdSet* failureSet_;
-    const SpaceLayout* layout_;
-    ThreadPool<IoUnit> pool_;
-    size_t ioSize_;
-    size_t shardSize_;
-    size_t nShardPerBlock_;
-    bool ioDirect_;
-    thread_local static AsyncIOQueue asyncQueue_;
+    struct io_uring ring_;
+    static constexpr unsigned int QUEUE_DEPTH = 256;
+    bool initialized_{false};
 
 public:
-    Status Setup(const Config& config, TaskIdSet* failureSet, const SpaceLayout* layout);
-    void Push(TaskPtr task, WaiterPtr waiter);
+    AsyncIOQueue() = default;
+    ~AsyncIOQueue();
 
-private:
-    void Worker(IoUnit& ios);
-    Status H2S(IoUnit& ios);
-    Status S2H(IoUnit& ios);
+    // Initialize io_uring queue
+    Status Init();
+
+    // Submit async read operation
+    Status SubmitRead(int fd, void* buf, size_t size, off64_t offset);
+
+    // Submit async write operation
+    Status SubmitWrite(int fd, const void* buf, size_t size, off64_t offset);
+
+    // Wait for all submitted operations to complete
+    Status WaitAll();
+
+    // Get number of completed operations
+    int GetCompletions();
+
+    // Check if initialized
+    bool IsInitialized() const { return initialized_; }
 };
 
 }  // namespace UC::PosixStore

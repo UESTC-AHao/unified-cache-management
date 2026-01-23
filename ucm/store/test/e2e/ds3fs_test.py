@@ -27,34 +27,33 @@ import secrets
 import time
 from typing import List
 
-import cupy
 import numpy as np
 
-from ucm.store.ds3fs.connector import UcmDs3fsStore
+from ucm.store.posix.connector import UcmPosixStore
 from ucm.store.ucmstore import Task
 
 
-class Ds3fsStoreOnly:
+class PosixStoreOnly:
     def __init__(
         self,
         block_size: int,
         storage_backends: List[str],
     ):
-        ds3fs_config = {}
-        ds3fs_config["storage_backends"] = storage_backends
-        ds3fs_config["device_id"] = 0
-        ds3fs_config["tensor_size"] = block_size
-        ds3fs_config["shard_size"] = block_size
-        ds3fs_config["block_size"] = block_size
-        ds3fs_config["io_direct"] = True
-        ds3fs_config["stream_number"] = 32
-        self.ds3fs = UcmDs3fsStore(ds3fs_config)
+        posix_config = {}
+        posix_config["storage_backends"] = storage_backends
+        posix_config["device_id"] = 0
+        posix_config["tensor_size"] = block_size
+        posix_config["shard_size"] = block_size
+        posix_config["block_size"] = block_size
+        posix_config["io_direct"] = True
+        posix_config["stream_number"] = 32
+        self.posix = UcmPosixStore(posix_config)
 
     def lookup(self, block_ids: List[bytes]) -> List[bool]:
-        return self.ds3fs.lookup(block_ids)
+        return self.posix.lookup(block_ids)
 
     def prefetch(self, block_ids: List[bytes]) -> None:
-        return self.ds3fs.prefetch(block_ids)
+        return self.posix.prefetch(block_ids)
 
     def load_data(
         self,
@@ -62,7 +61,7 @@ class Ds3fsStoreOnly:
         shard_index: List[int],
         dst_addr: List[List[int]],
     ) -> Task:
-        return self.ds3fs.load_data(block_ids, shard_index, dst_addr)
+        return self.posix.load_data(block_ids, shard_index, dst_addr)
 
     def dump_data(
         self,
@@ -70,17 +69,17 @@ class Ds3fsStoreOnly:
         shard_index: List[int],
         src_addr: List[List[int]],
     ) -> Task:
-        return self.ds3fs.dump_data(block_ids, shard_index, src_addr)
+        return self.posix.dump_data(block_ids, shard_index, src_addr)
 
     def wait(self, task: Task) -> None:
-        return self.ds3fs.wait(task)
+        return self.posix.wait(task)
 
     def check(self, task: Task) -> bool:
-        return self.ds3fs.check(task)
+        return self.posix.check(task)
 
 
 def e2e_test(
-    store: Ds3fsStoreOnly,
+    store: PosixStoreOnly,
     block_size: int,
     block_num: int,
 ):
@@ -95,16 +94,16 @@ def e2e_test(
     src_arrays = []
     src_mems = []
     for i in range(block_num):
-        mem = cupy.cuda.alloc_pinned_memory(block_size)
-        arr = np.frombuffer(mem, dtype=np.uint8, count=block_size)
-        arr.flags.writeable = True
+        arr = np.zeros(block_size, dtype=np.uint8)
         arr[:] = np.random.randint(0, 256, block_size, dtype=np.uint8)
-        src_data.append([mem.ptr])
+        src_data.append([arr.ctypes.data])
         src_arrays.append(arr.copy())
-        src_mems.append(mem)
+        src_mems.append(arr)
 
+    tp = time.perf_counter()
     task = store.dump_data(block_ids, shard_indexes, src_data)
     store.wait(task)
+    cost_dump = time.perf_counter() - tp
 
     founds = store.lookup(block_ids)
     assert all(founds), "Blocks should exist after dump"
@@ -113,16 +112,15 @@ def e2e_test(
     dst_arrays = []
     dst_mems = []
     for i in range(block_num):
-        mem = cupy.cuda.alloc_pinned_memory(block_size)
-        arr = np.frombuffer(mem, dtype=np.uint8, count=block_size)
-        arr.flags.writeable = True
-        arr[:] = 0
-        dst_data.append([mem.ptr])
+        arr = np.zeros(block_size, dtype=np.uint8)
+        dst_data.append([arr.ctypes.data])
         dst_arrays.append(arr)
-        dst_mems.append(mem)
+        dst_mems.append(arr)
 
+    tp = time.perf_counter()
     task = store.load_data(block_ids, shard_indexes, dst_data)
     store.wait(task)
+    cost_load = time.perf_counter() - tp
 
     for i, (src_arr, dst_arr) in enumerate(zip(src_arrays, dst_arrays)):
         if not np.array_equal(src_arr, dst_arr):
@@ -133,6 +131,12 @@ def e2e_test(
             print(f"  dst sample: {dst_arr[diff_mask][:10]}")
             assert False, f"Data mismatch at block {i}"
 
+    data_size = block_size * block_num
+    bw_dump = data_size / cost_dump if cost_dump > 0 else 0
+    bw_load = data_size / cost_load if cost_load > 0 else 0
+    print(f"dump={cost_dump * 1e3:.3f}ms, load={cost_load * 1e3:.3f}ms, "
+          f"bw_dump={bw_dump / 1e9:.3f}GB/s, bw_load={bw_load / 1e9:.3f}GB/s")
+
 
 def main():
     block_size = 1048576 * 16
@@ -140,10 +144,11 @@ def main():
     storage_backends = ["."]
     test_batch_number = 64
 
-    store = Ds3fsStoreOnly(block_size, storage_backends)
+    store = PosixStoreOnly(block_size, storage_backends)
 
     for i in range(test_batch_number):
         e2e_test(store, block_size, block_num)
+        print(f"[{i+1:03}/{test_batch_number:03}] completed")
 
     time.sleep(10)
 

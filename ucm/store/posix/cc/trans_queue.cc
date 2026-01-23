@@ -24,8 +24,11 @@
 #include "trans_queue.h"
 #include "logger/logger.h"
 #include "posix_file.h"
+#include <fmt/format.h>
 
 namespace UC::PosixStore {
+
+thread_local AsyncIOQueue TransQueue::asyncQueue_;
 
 Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const SpaceLayout* layout)
 {
@@ -35,6 +38,13 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
     shardSize_ = config.shardSize;
     nShardPerBlock_ = config.blockSize / config.shardSize;
     ioDirect_ = config.ioDirect;
+
+    // Initialize async IO queue for each worker thread
+    auto s = asyncQueue_.Init();
+    if (s.Failure()) {
+        UC_WARN("AsyncIOQueue initialization failed, falling back to sync I/O: {}", s);
+    }
+
     auto success = pool_.SetNWorker(config.streamNumber)
                        .SetWorkerFn([this](auto& ios, auto&) { Worker(ios); })
                        .Run();
@@ -89,15 +99,37 @@ Status TransQueue::H2S(IoUnit& ios)
         UC_ERROR("Failed({}) to open file({}) with flags({}).", s, path, flags);
         return s;
     }
+
     auto offset = shardSize_ * ios.shard.index;
-    for (const auto& addr : ios.shard.addrs) {
-        s = file.Write(addr, ioSize_, offset);
+
+    // Use async I/O if available
+    if (asyncQueue_.IsInitialized()) {
+        for (const auto& addr : ios.shard.addrs) {
+            s = asyncQueue_.SubmitWrite(file.Handle(), addr, ioSize_, offset);
+            if (s.Failure()) [[unlikely]] {
+                UC_ERROR("Failed({}) to submit async write to file({}).", s, path);
+                return s;
+            }
+            offset += ioSize_;
+        }
+
+        s = asyncQueue_.WaitAll();
         if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to write file({}:{}).", s, path, offset);
+            UC_ERROR("Failed({}) to wait for async write completion on file({}).", s, path);
             return s;
         }
-        offset += ioSize_;
+    } else {
+        // Fallback to sync I/O
+        for (const auto& addr : ios.shard.addrs) {
+            s = file.Write(addr, ioSize_, offset);
+            if (s.Failure()) [[unlikely]] {
+                UC_ERROR("Failed({}) to write file({}:{}).", s, path, offset);
+                return s;
+            }
+            offset += ioSize_;
+        }
     }
+
     return Status::OK();
 }
 
@@ -112,15 +144,37 @@ Status TransQueue::S2H(IoUnit& ios)
         UC_ERROR("Failed({}) to open file({}) with flags({}).", s, path, flags);
         return s;
     }
+
     auto offset = shardSize_ * ios.shard.index;
-    for (const auto& addr : ios.shard.addrs) {
-        s = file.Read(addr, ioSize_, offset);
+
+    // Use async I/O if available
+    if (asyncQueue_.IsInitialized()) {
+        for (const auto& addr : ios.shard.addrs) {
+            s = asyncQueue_.SubmitRead(file.Handle(), addr, ioSize_, offset);
+            if (s.Failure()) [[unlikely]] {
+                UC_ERROR("Failed({}) to submit async read from file({}).", s, path);
+                return s;
+            }
+            offset += ioSize_;
+        }
+
+        s = asyncQueue_.WaitAll();
         if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to read file({}:{}).", s, path, offset);
+            UC_ERROR("Failed({}) to wait for async read completion on file({}).", s, path);
             return s;
         }
-        offset += ioSize_;
+    } else {
+        // Fallback to sync I/O
+        for (const auto& addr : ios.shard.addrs) {
+            s = file.Read(addr, ioSize_, offset);
+            if (s.Failure()) [[unlikely]] {
+                UC_ERROR("Failed({}) to read file({}:{}).", s, path, offset);
+                return s;
+            }
+            offset += ioSize_;
+        }
     }
+
     return Status::OK();
 }
 
