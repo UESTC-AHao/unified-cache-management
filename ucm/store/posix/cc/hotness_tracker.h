@@ -21,33 +21,53 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_POSIX_STORE_CC_GLOBAL_CONFIG_H
-#define UNIFIEDCACHE_POSIX_STORE_CC_GLOBAL_CONFIG_H
+#ifndef UNIFIEDCACHE_POSIX_STORE_CC_HOTNESS_TRACKER_H
+#define UNIFIEDCACHE_POSIX_STORE_CC_HOTNESS_TRACKER_H
 
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
 #include <string>
-#include <vector>
+#include <thread>
+#include "space_layout.h"
+#include "thread/thread_pool.h"
+#include "type/types.h"
 
 namespace UC::PosixStore {
 
-struct Config {
-    std::vector<std::string> storageBackends{};
-    std::string uniqueId{};
-    int32_t deviceId{-1};
-    size_t tensorSize{0};
-    size_t shardSize{0};
-    size_t blockSize{0};
-    bool ioDirect{false};
-    size_t dataTransConcurrency{8};
-    size_t lookupConcurrency{8};
-    size_t timeoutMs{30000};
-    size_t dataDirShardBytes{3};
-    bool posixStorageGcEnable{false};
-    double gcRecyclePercent{0.1};
-    size_t gcConcurrency{16};
-    size_t gcCheckInterval{30};
-    size_t utimeConcurrency{8};
-    size_t posixStorageCapacityGb{0};
-    double gcTriggerThresholdRatio{0.7};
+class ShardGarbageCollector;
+
+struct UtimeTask {
+    std::string filePath;
+};
+
+class HotnessTracker {
+public:
+    HotnessTracker() = default;
+    HotnessTracker(const HotnessTracker&) = delete;
+    HotnessTracker& operator=(const HotnessTracker&) = delete;
+    ~HotnessTracker();
+
+    Status Setup(const SpaceLayout* layout, size_t gcCheckIntervalSeconds, size_t utimeConcurrency);
+    void SetGCTrigger(ShardGarbageCollector* gc, size_t maxFileCount, double thresholdRatio);
+    void Touch(const Detail::BlockId& blockId);
+
+private:
+    void GCCheckLoop();
+
+    const SpaceLayout* layout_{nullptr};
+    size_t gcCheckIntervalSeconds_{60};
+
+    ThreadPool<UtimeTask> utimePool_;
+
+    std::atomic<bool> stop_{false};
+    std::thread gcWorker_;
+    std::mutex gcMtx_;
+    std::condition_variable gcCv_;
+
+    ShardGarbageCollector* gc_{nullptr};
+    size_t maxFileCount_{0};
+    double thresholdRatio_{0.0};
 };
 
 }  // namespace UC::PosixStore

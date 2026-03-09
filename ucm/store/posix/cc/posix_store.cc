@@ -23,7 +23,9 @@
  * */
 #include "posix_store.h"
 #include <fmt/ranges.h>
+#include "hotness_tracker.h"
 #include "logger/logger.h"
+#include "shard_gc.h"
 #include "space_manager.h"
 #include "trans_manager.h"
 
@@ -33,7 +35,10 @@ class PosixStoreImpl {
 public:
     SpaceManager spaceMgr;
     TransManager transMgr;
+    ShardGarbageCollector gcMgr;
+    HotnessTracker hotnessTracker;
     bool transEnable{false};
+    bool gcEnable{false};
 
 public:
     Status Setup(const Config& config)
@@ -43,14 +48,87 @@ public:
             UC_ERROR("Failed to check config params: {}.", s);
             return s;
         }
-        s = spaceMgr.Setup(config);
-        if (s.Failure()) [[unlikely]] { return s; }
         transEnable = config.deviceId >= 0;
+
+        bool isScheduler = (config.deviceId == -1);
+        bool isDP0 = false;
+        if (!config.uniqueId.empty() && config.uniqueId.size() >= 4) {
+            size_t dpPos = config.uniqueId.rfind("_dp");
+            if (dpPos != std::string::npos && dpPos == config.uniqueId.size() - 4) {
+                isDP0 = (config.uniqueId.back() == '0');
+            }
+        }
+
+        bool isDPScenario = (config.uniqueId.find("_dp") != std::string::npos);
+        gcEnable = config.posixStorageGcEnable && isScheduler && (!isDPScenario || isDP0);
+
+        ShowConfig(config);
+
+        if (isDPScenario) {
+            UC_DEBUG("DP scenario, uniqueId={}, isDP0={}, gcEnable={}", config.uniqueId, isDP0,
+                     gcEnable);
+        } else {
+            UC_DEBUG("Non-DP scenario, isScheduler={}, gcEnable={}", isScheduler, gcEnable);
+        }
+
+        if (gcEnable) {
+            s = hotnessTracker.Setup(spaceMgr.GetLayout(), config.gcCheckInterval,
+                                     config.utimeConcurrency);
+            if (s.Failure()) [[unlikely]] {
+                UC_ERROR("Failed to setup HotnessTracker: {}.", s);
+                return s;
+            }
+        }
+        s = spaceMgr.Setup(config, gcEnable ? &hotnessTracker : nullptr);
+        if (s.Failure()) [[unlikely]] { return s; }
+        if (gcEnable) {
+            ShardGCConfig gcConfig;
+            gcConfig.recyclePercent = config.gcRecyclePercent;
+            gcConfig.gcConcurrency = config.gcConcurrency;
+            s = gcMgr.Setup(spaceMgr.GetLayout(), config.storageBackends, gcConfig);
+            if (s.Failure()) [[unlikely]] {
+                UC_ERROR("Failed to setup GC: {}.", s);
+                return s;
+            }
+            if (config.posixStorageCapacityGb > 0) {
+                size_t storageCapacityBytes =
+                    config.posixStorageCapacityGb * 1024ULL * 1024ULL * 1024ULL;
+                size_t maxFileCount = storageCapacityBytes / config.blockSize;
+                auto shards = spaceMgr.GetLayout()->RelativeRoots();
+                size_t totalShards = shards.size();
+                if (totalShards > 0) {
+                    size_t thresholdFilesPerShard = static_cast<size_t>(
+                        maxFileCount / totalShards * config.gcTriggerThresholdRatio);
+                    size_t recycleNum =
+                        static_cast<size_t>(thresholdFilesPerShard * config.gcRecyclePercent);
+                    if (recycleNum == 0) {
+                        size_t minFilesPerShard =
+                            static_cast<size_t>(
+                                1.0 / (config.gcTriggerThresholdRatio * config.gcRecyclePercent)) +
+                            1;
+                        size_t minCapacityBytes = minFilesPerShard * totalShards * config.blockSize;
+                        size_t minCapacityGb =
+                            (minCapacityBytes + 1024ULL * 1024ULL * 1024ULL - 1) /
+                            (1024ULL * 1024ULL * 1024ULL);
+                        return Status::InvalidParam(
+                            "posix_storage_capacity_gb({}) is too small, GC cannot recycle any "
+                            "files. Minimum recommended: {}GB",
+                            config.posixStorageCapacityGb, minCapacityGb);
+                    }
+                    UC_INFO("GC enabled: capacityGb={}, thresholdFilesPerShard={}",
+                            config.posixStorageCapacityGb, thresholdFilesPerShard);
+                }
+                gcMgr.SetGCThreshold(maxFileCount, config.gcTriggerThresholdRatio);
+                hotnessTracker.SetGCTrigger(&gcMgr, maxFileCount, config.gcTriggerThresholdRatio);
+                if (gcMgr.ShouldTrigger(maxFileCount, config.gcTriggerThresholdRatio)) {
+                    gcMgr.Trigger();
+                }
+            }
+        }
         if (transEnable) {
             s = transMgr.Setup(config, spaceMgr.GetLayout());
             if (s.Failure()) [[unlikely]] { return s; }
         }
-        ShowConfig(config);
         return Status::OK();
     }
 
@@ -86,6 +164,7 @@ private:
         if (buildType.empty()) { buildType = "Release"; }
         UC_INFO("{}-{}({}).", ns, UCM_COMMIT_ID, buildType);
         UC_INFO("Set {}::StorageBackends to {}.", ns, config.storageBackends);
+        UC_INFO("Set {}::UniqueId to {}.", ns, config.uniqueId);
         UC_INFO("Set {}::DeviceId to {}.", ns, config.deviceId);
         UC_INFO("Set {}::TensorSize to {}.", ns, config.tensorSize);
         UC_INFO("Set {}::ShardSize to {}.", ns, config.shardSize);
@@ -104,6 +183,7 @@ Status PosixStore::Setup(const Detail::Dictionary& config)
 {
     Config param;
     config.Get("storage_backends", param.storageBackends);
+    config.Get("unique_id", param.uniqueId);
     config.GetNumber("device_id", param.deviceId);
     config.GetNumber("tensor_size", param.tensorSize);
     config.GetNumber("shard_size", param.shardSize);
@@ -113,6 +193,13 @@ Status PosixStore::Setup(const Detail::Dictionary& config)
     config.GetNumber("posix_lookup_concurrency", param.lookupConcurrency);
     config.GetNumber("timeout_ms", param.timeoutMs);
     config.GetNumber("data_dir_shard_bytes", param.dataDirShardBytes);
+    config.Get("posix_storage_gc_enable", param.posixStorageGcEnable);
+    config.Get("gc_recycle_percent", param.gcRecyclePercent);
+    config.GetNumber("gc_concurrency", param.gcConcurrency);
+    config.GetNumber("gc_check_interval", param.gcCheckInterval);
+    config.GetNumber("utime_concurrency", param.utimeConcurrency);
+    config.GetNumber("posix_storage_capacity_gb", param.posixStorageCapacityGb);
+    config.Get("gc_trigger_threshold_ratio", param.gcTriggerThresholdRatio);
     try {
         impl_ = std::make_shared<PosixStoreImpl>();
     } catch (const std::exception& e) {
@@ -173,6 +260,30 @@ Status PosixStore::PosixStore::Wait(Detail::TaskHandle taskId)
     auto s = impl_->transMgr.Wait(taskId);
     if (s.Failure()) [[unlikely]] { UC_ERROR("Failed({}) to wait task({}).", s, taskId); }
     return s;
+}
+
+void PosixStore::NotifyAccess(const Detail::BlockId* blocks, size_t num)
+{
+    if (!impl_->gcEnable) { return; }
+    for (size_t i = 0; i < num; ++i) { impl_->hotnessTracker.Touch(blocks[i]); }
+}
+
+void PosixStore::TriggerGC()
+{
+    if (!impl_->gcEnable) { return; }
+    impl_->gcMgr.Trigger();
+}
+
+Expected<size_t> PosixStore::ExecuteGC()
+{
+    if (!impl_->gcEnable) { return Status::Error("GC is not enabled"); }
+    return impl_->gcMgr.Execute();
+}
+
+bool PosixStore::IsGCRunning() const
+{
+    if (!impl_->gcEnable) { return false; }
+    return impl_->gcMgr.IsRunning();
 }
 
 }  // namespace UC::PosixStore
