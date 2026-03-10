@@ -140,13 +140,12 @@ def main():
     config["posix_data_trans_concurrency"] = 32
     config["posix_lookup_concurrency"] = 32
     test_batch_number = 512
-    config["posix_storage_gc_enable"] = True
-    config["posix_storage_capacity_gb"] = 100
-    config["gc_trigger_threshold_ratio"] = 0.7
-    config["gc_recycle_percent"] = 0.1
-    config["gc_concurrency"] = 16
-    config["gc_check_interval"] = 30
-    config["utime_concurrency"] = 8
+    config["posix_gc_enable"] = True
+    config["posix_capacity_gb"] = 100
+    config["posix_gc_trigger_threshold_ratio"] = 0.7
+    config["posix_gc_recycle_percent"] = 0.1
+    config["posix_gc_concurrency"] = 16
+    config["posix_gc_check_interval"] = 30
     worker = UcmPipelineStore(config | {"device_id": device_id})
     scheduler = UcmPipelineStore(config)
     for _ in range(test_batch_number):

@@ -30,29 +30,23 @@ namespace UC::PosixStore {
 
 HotnessTracker::~HotnessTracker()
 {
+    stop_.store(true);
     {
         std::lock_guard<std::mutex> lock(gcMtx_);
-        stop_.store(true);
         gcCv_.notify_all();
     }
+    if (utimeWorker_.joinable()) { utimeWorker_.join(); }
     if (gcWorker_.joinable()) { gcWorker_.join(); }
 }
 
-Status HotnessTracker::Setup(const SpaceLayout* layout, size_t gcCheckIntervalSeconds,
-                             size_t utimeConcurrency)
+Status HotnessTracker::Setup(const SpaceLayout* layout, size_t gcCheckIntervalSeconds)
 {
     if (!layout) { return Status::InvalidParam("layout is null"); }
     layout_ = layout;
     gcCheckIntervalSeconds_ = gcCheckIntervalSeconds;
     stop_.store(false);
 
-    auto success =
-        utimePool_
-            .SetWorkerFn([](UtimeTask& task, auto&) { utime(task.filePath.c_str(), nullptr); })
-            .SetNWorker(utimeConcurrency)
-            .Run();
-    if (!success) { return Status::Error("failed to start utime thread pool"); }
-
+    utimeWorker_ = std::thread(&HotnessTracker::UtimeWorkerLoop, this);
     gcWorker_ = std::thread(&HotnessTracker::GCCheckLoop, this);
     return Status::OK();
 }
@@ -68,7 +62,34 @@ void HotnessTracker::SetGCTrigger(ShardGarbageCollector* gc, size_t maxFileCount
 void HotnessTracker::Touch(const Detail::BlockId& blockId)
 {
     auto filePath = layout_->DataFilePath(blockId, false);
-    utimePool_.Push({std::move(filePath)});
+    std::lock_guard<std::mutex> lock(queueMtx_);
+    produceQueue_.push_back(std::move(filePath));
+}
+
+void HotnessTracker::UtimeWorkerLoop()
+{
+    constexpr size_t kSpinLimit = 16;
+    size_t spinCount = 0;
+    while (!stop_.load()) {
+        {
+            std::lock_guard<std::mutex> lock(queueMtx_);
+            consumeQueue_.swap(produceQueue_);
+        }
+        if (consumeQueue_.empty()) {
+            if (++spinCount < kSpinLimit) {
+                std::this_thread::yield();
+            } else {
+                std::this_thread::sleep_for(std::chrono::microseconds(100));
+                spinCount = 0;
+            }
+            continue;
+        }
+        spinCount = 0;
+        while (!consumeQueue_.empty()) {
+            utime(consumeQueue_.front().c_str(), nullptr);
+            consumeQueue_.pop_front();
+        }
+    }
 }
 
 void HotnessTracker::GCCheckLoop()

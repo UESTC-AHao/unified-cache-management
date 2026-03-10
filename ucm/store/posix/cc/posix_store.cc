@@ -49,31 +49,12 @@ public:
             return s;
         }
         transEnable = config.deviceId >= 0;
-
-        bool isScheduler = (config.deviceId == -1);
-        bool isDP0 = false;
-        if (!config.uniqueId.empty() && config.uniqueId.size() >= 4) {
-            size_t dpPos = config.uniqueId.rfind("_dp");
-            if (dpPos != std::string::npos && dpPos == config.uniqueId.size() - 4) {
-                isDP0 = (config.uniqueId.back() == '0');
-            }
-        }
-
-        bool isDPScenario = (config.uniqueId.find("_dp") != std::string::npos);
-        gcEnable = config.posixStorageGcEnable && isScheduler && (!isDPScenario || isDP0);
+        gcEnable = config.posixGcEnable;
 
         ShowConfig(config);
 
-        if (isDPScenario) {
-            UC_DEBUG("DP scenario, uniqueId={}, isDP0={}, gcEnable={}", config.uniqueId, isDP0,
-                     gcEnable);
-        } else {
-            UC_DEBUG("Non-DP scenario, isScheduler={}, gcEnable={}", isScheduler, gcEnable);
-        }
-
         if (gcEnable) {
-            s = hotnessTracker.Setup(spaceMgr.GetLayout(), config.gcCheckInterval,
-                                     config.utimeConcurrency);
+            s = hotnessTracker.Setup(spaceMgr.GetLayout(), config.posixGcCheckInterval);
             if (s.Failure()) [[unlikely]] {
                 UC_ERROR("Failed to setup HotnessTracker: {}.", s);
                 return s;
@@ -83,44 +64,44 @@ public:
         if (s.Failure()) [[unlikely]] { return s; }
         if (gcEnable) {
             ShardGCConfig gcConfig;
-            gcConfig.recyclePercent = config.gcRecyclePercent;
-            gcConfig.gcConcurrency = config.gcConcurrency;
+            gcConfig.recyclePercent = config.posixGcRecyclePercent;
+            gcConfig.gcConcurrency = config.posixGcConcurrency;
             s = gcMgr.Setup(spaceMgr.GetLayout(), config.storageBackends, gcConfig);
             if (s.Failure()) [[unlikely]] {
                 UC_ERROR("Failed to setup GC: {}.", s);
                 return s;
             }
-            if (config.posixStorageCapacityGb > 0) {
-                size_t storageCapacityBytes =
-                    config.posixStorageCapacityGb * 1024ULL * 1024ULL * 1024ULL;
+            if (config.posixCapacityGb > 0) {
+                size_t storageCapacityBytes = config.posixCapacityGb * 1024ULL * 1024ULL * 1024ULL;
                 size_t maxFileCount = storageCapacityBytes / config.blockSize;
                 auto shards = spaceMgr.GetLayout()->RelativeRoots();
                 size_t totalShards = shards.size();
                 if (totalShards > 0) {
                     size_t thresholdFilesPerShard = static_cast<size_t>(
-                        maxFileCount / totalShards * config.gcTriggerThresholdRatio);
+                        maxFileCount / totalShards * config.posixGcTriggerThresholdRatio);
                     size_t recycleNum =
-                        static_cast<size_t>(thresholdFilesPerShard * config.gcRecyclePercent);
+                        static_cast<size_t>(thresholdFilesPerShard * config.posixGcRecyclePercent);
                     if (recycleNum == 0) {
                         size_t minFilesPerShard =
-                            static_cast<size_t>(
-                                1.0 / (config.gcTriggerThresholdRatio * config.gcRecyclePercent)) +
+                            static_cast<size_t>(1.0 / (config.posixGcTriggerThresholdRatio *
+                                                       config.posixGcRecyclePercent)) +
                             1;
                         size_t minCapacityBytes = minFilesPerShard * totalShards * config.blockSize;
                         size_t minCapacityGb =
                             (minCapacityBytes + 1024ULL * 1024ULL * 1024ULL - 1) /
                             (1024ULL * 1024ULL * 1024ULL);
                         return Status::InvalidParam(
-                            "posix_storage_capacity_gb({}) is too small, GC cannot recycle any "
+                            "posix_capacity_gb({}) is too small, GC cannot recycle any "
                             "files. Minimum recommended: {}GB",
-                            config.posixStorageCapacityGb, minCapacityGb);
+                            config.posixCapacityGb, minCapacityGb);
                     }
                     UC_INFO("GC enabled: capacityGb={}, thresholdFilesPerShard={}",
-                            config.posixStorageCapacityGb, thresholdFilesPerShard);
+                            config.posixCapacityGb, thresholdFilesPerShard);
                 }
-                gcMgr.SetGCThreshold(maxFileCount, config.gcTriggerThresholdRatio);
-                hotnessTracker.SetGCTrigger(&gcMgr, maxFileCount, config.gcTriggerThresholdRatio);
-                if (gcMgr.ShouldTrigger(maxFileCount, config.gcTriggerThresholdRatio)) {
+                gcMgr.SetGCThreshold(maxFileCount, config.posixGcTriggerThresholdRatio);
+                hotnessTracker.SetGCTrigger(&gcMgr, maxFileCount,
+                                            config.posixGcTriggerThresholdRatio);
+                if (gcMgr.ShouldTrigger(maxFileCount, config.posixGcTriggerThresholdRatio)) {
                     gcMgr.Trigger();
                 }
             }
@@ -193,13 +174,12 @@ Status PosixStore::Setup(const Detail::Dictionary& config)
     config.GetNumber("posix_lookup_concurrency", param.lookupConcurrency);
     config.GetNumber("timeout_ms", param.timeoutMs);
     config.GetNumber("data_dir_shard_bytes", param.dataDirShardBytes);
-    config.Get("posix_storage_gc_enable", param.posixStorageGcEnable);
-    config.Get("gc_recycle_percent", param.gcRecyclePercent);
-    config.GetNumber("gc_concurrency", param.gcConcurrency);
-    config.GetNumber("gc_check_interval", param.gcCheckInterval);
-    config.GetNumber("utime_concurrency", param.utimeConcurrency);
-    config.GetNumber("posix_storage_capacity_gb", param.posixStorageCapacityGb);
-    config.Get("gc_trigger_threshold_ratio", param.gcTriggerThresholdRatio);
+    config.Get("posix_gc_enable", param.posixGcEnable);
+    config.Get("posix_gc_recycle_percent", param.posixGcRecyclePercent);
+    config.GetNumber("posix_gc_concurrency", param.posixGcConcurrency);
+    config.GetNumber("posix_gc_check_interval", param.posixGcCheckInterval);
+    config.GetNumber("posix_capacity_gb", param.posixCapacityGb);
+    config.Get("posix_gc_trigger_threshold_ratio", param.posixGcTriggerThresholdRatio);
     try {
         impl_ = std::make_shared<PosixStoreImpl>();
     } catch (const std::exception& e) {
@@ -260,12 +240,6 @@ Status PosixStore::PosixStore::Wait(Detail::TaskHandle taskId)
     auto s = impl_->transMgr.Wait(taskId);
     if (s.Failure()) [[unlikely]] { UC_ERROR("Failed({}) to wait task({}).", s, taskId); }
     return s;
-}
-
-void PosixStore::NotifyAccess(const Detail::BlockId* blocks, size_t num)
-{
-    if (!impl_->gcEnable) { return; }
-    for (size_t i = 0; i < num; ++i) { impl_->hotnessTracker.Touch(blocks[i]); }
 }
 
 void PosixStore::TriggerGC()

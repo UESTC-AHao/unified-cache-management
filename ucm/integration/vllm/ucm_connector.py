@@ -304,6 +304,16 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 "scheduler block_size = %d",
                 config["block_size"],
             )
+        # GC only enabled for Scheduler with data_parallel_rank == 0
+        if config.get("posix_gc_enable", False):
+            dp_rank = self._vllm_config.parallel_config.data_parallel_rank
+            if self._role == KVConnectorRole.WORKER or dp_rank != 0:
+                config["posix_gc_enable"] = False
+                logger.info(
+                    "GC disabled: role=%s, data_parallel_rank=%d",
+                    self._role, dp_rank,
+                )
+
         logger.info(f"create {name} with config: {config}")
         return UcmConnectorFactoryV1.create_connector(name, config, module_path)
 

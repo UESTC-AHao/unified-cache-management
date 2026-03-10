@@ -53,13 +53,12 @@ def setup(
     config["device_id"] = 0 if worker else -1
 
     # GC配置
-    config["posix_storage_gc_enable"] = True
-    config["posix_storage_capacity_gb"] = 100
-    config["gc_trigger_threshold_ratio"] = 0.7
-    config["gc_recycle_percent"] = 0.1
-    config["gc_concurrency"] = 16
-    config["gc_check_interval"] = 30
-    config["utime_concurrency"] = 8
+    config["posix_gc_enable"] = True
+    config["posix_capacity_gb"] = 100
+    config["posix_gc_trigger_threshold_ratio"] = 0.7
+    config["posix_gc_recycle_percent"] = 0.1
+    config["posix_gc_concurrency"] = 16
+    config["posix_gc_check_interval"] = 30
 
     return UcmConnectorFactoryV1.create_connector(class_name, config, module_path)
 

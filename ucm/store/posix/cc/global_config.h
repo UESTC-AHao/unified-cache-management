@@ -41,13 +41,12 @@ struct Config {
     size_t lookupConcurrency{8};
     size_t timeoutMs{30000};
     size_t dataDirShardBytes{3};
-    bool posixStorageGcEnable{false};
-    double gcRecyclePercent{0.1};
-    size_t gcConcurrency{16};
-    size_t gcCheckInterval{30};
-    size_t utimeConcurrency{8};
-    size_t posixStorageCapacityGb{0};
-    double gcTriggerThresholdRatio{0.7};
+    bool posixGcEnable{false};
+    double posixGcRecyclePercent{0.1};
+    size_t posixGcConcurrency{16};
+    size_t posixGcCheckInterval{30};
+    size_t posixCapacityGb{0};
+    double posixGcTriggerThresholdRatio{0.7};
 };
 
 }  // namespace UC::PosixStore

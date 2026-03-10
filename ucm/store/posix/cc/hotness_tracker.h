@@ -26,20 +26,16 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <thread>
 #include "space_layout.h"
-#include "thread/thread_pool.h"
 #include "type/types.h"
 
 namespace UC::PosixStore {
 
 class ShardGarbageCollector;
-
-struct UtimeTask {
-    std::string filePath;
-};
 
 class HotnessTracker {
 public:
@@ -48,19 +44,23 @@ public:
     HotnessTracker& operator=(const HotnessTracker&) = delete;
     ~HotnessTracker();
 
-    Status Setup(const SpaceLayout* layout, size_t gcCheckIntervalSeconds, size_t utimeConcurrency);
+    Status Setup(const SpaceLayout* layout, size_t gcCheckIntervalSeconds);
     void SetGCTrigger(ShardGarbageCollector* gc, size_t maxFileCount, double thresholdRatio);
     void Touch(const Detail::BlockId& blockId);
 
 private:
+    void UtimeWorkerLoop();
     void GCCheckLoop();
 
     const SpaceLayout* layout_{nullptr};
     size_t gcCheckIntervalSeconds_{60};
 
-    ThreadPool<UtimeTask> utimePool_;
+    std::deque<std::string> produceQueue_;
+    std::deque<std::string> consumeQueue_;
+    std::mutex queueMtx_;
 
     std::atomic<bool> stop_{false};
+    std::thread utimeWorker_;
     std::thread gcWorker_;
     std::mutex gcMtx_;
     std::condition_variable gcCv_;

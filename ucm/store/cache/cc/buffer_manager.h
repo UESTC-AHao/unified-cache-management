@@ -98,7 +98,6 @@ private:
         std::vector<size_t> missIdx;
         std::vector<Detail::BlockId> hitBlk;
         Lookup(blocks, num, results, missBlk, missIdx, hitBlk);
-        if (!hitBlk.empty()) { backend_->NotifyAccess(hitBlk.data(), hitBlk.size()); }
         if (missBlk.empty()) { return results; }
         StopWatch sw;
         auto res = backend_->Lookup(missBlk.data(), missBlk.size());
@@ -116,7 +115,6 @@ private:
         std::vector<size_t> missIdx;
         std::vector<Detail::BlockId> hitBlk;
         Lookup(blocks, num, results, missBlk, missIdx, hitBlk);
-        if (!hitBlk.empty()) { backend_->NotifyAccess(hitBlk.data(), hitBlk.size()); }
         if (missBlk.empty()) { return static_cast<ssize_t>(num) - 1; }
         StopWatch sw;
         auto res = backend_->LookupOnPrefix(missBlk.data(), missBlk.size());
