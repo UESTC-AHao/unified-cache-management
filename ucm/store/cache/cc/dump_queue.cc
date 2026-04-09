@@ -43,6 +43,7 @@ Status DumpQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     tensorSizes_ = config.tensorSizes;
     streamNumber_ = config.streamNumber;
     cpuAffinityCores_ = config.cpuAffinityCores;
+    gdsMode_ = (config.ioEngine == "gds");
     waiting_.Setup(config.waitingQueueDepth);
     dumping_.Setup(config.runningQueueDepth);
     dumper_ = std::thread{&DumpQueue::BackendDumpStage, this};
@@ -64,15 +65,24 @@ void DumpQueue::Submit(TaskPtr task, WaiterPtr waiter)
 
 void DumpQueue::DispatchStage(std::promise<Status>& started)
 {
-    CopyStream stream;
-    auto s = stream.Setup(deviceId_, streamNumber_);
-    started.set_value(s);
-    if (s.Failure()) [[unlikely]] { return; }
-    if (!cpuAffinityCores_.empty()) {
-        s = CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
-        if (s.Failure()) { UC_WARN("Failed({}) to set affinity.", s); }
+    if (!gdsMode_) {
+        CopyStream stream;
+        auto s = stream.Setup(deviceId_, streamNumber_);
+        started.set_value(s);
+        if (s.Failure()) [[unlikely]] { return; }
+        if (!cpuAffinityCores_.empty()) {
+            s = CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
+            if (s.Failure()) { UC_WARN("Failed({}) to set affinity.", s); }
+        }
+        waiting_.ConsumerLoop(stop_, &DumpQueue::DispatchOneTask, this, stream);
+    } else {
+        started.set_value(Status::OK());
+        if (!cpuAffinityCores_.empty()) {
+            auto s = CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
+            if (s.Failure()) { UC_WARN("Failed({}) to set affinity.", s); }
+        }
+        waiting_.ConsumerLoop(stop_, &DumpQueue::DispatchOneTaskGds, this);
     }
-    waiting_.ConsumerLoop(stop_, &DumpQueue::DispatchOneTask, this, stream);
 }
 
 void DumpQueue::DispatchOneTask(CopyStream& stream, TaskPair&& pair)
@@ -83,6 +93,19 @@ void DumpQueue::DispatchOneTask(CopyStream& stream, TaskPair&& pair)
     UC_DEBUG("Cache task({}) start running, wait {:.3f}ms.", task->id, wait * 1e3);
     if (!failureSet_->Contains(task->id)) {
         auto s = DumpOneTask(stream, task);
+        if (s.Failure()) [[unlikely]] { failureSet_->Insert(task->id); }
+    }
+    waiter->Done();
+}
+
+void DumpQueue::DispatchOneTaskGds(TaskPair&& pair)
+{
+    auto& task = pair.first;
+    auto& waiter = pair.second;
+    auto wait = NowTime::Now() - waiter->startTp;
+    UC_DEBUG("GDS dump task({}) start running, wait {:.3f}ms.", task->id, wait * 1e3);
+    if (!failureSet_->Contains(task->id)) {
+        auto s = DumpOneTaskGds(task);
         if (s.Failure()) [[unlikely]] { failureSet_->Insert(task->id); }
     }
     waiter->Done();
@@ -139,6 +162,37 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     UC_DEBUG("Cache task({}) mk_buf={:.3f}ms, sync={:.3f}ms, back={:.3f}ms.", task->id,
              (tpMakeBuffer - tp) * 1e3, (tpSyncStream - tpMakeBuffer) * 1e3,
              (tpEnd - tpSyncStream) * 1e3);
+    return Status::OK();
+}
+
+Status DumpQueue::DumpOneTaskGds(TaskPtr task)
+{
+    auto tp = NowTime::Now();
+    Detail::TaskDesc backendTaskDesc;
+    backendTaskDesc.brief = "GPU2Storage";
+    const auto nShard = task->desc.size();
+    UC_DEBUG("GDS dump try to dump ({}) shards.", nShard);
+    if (task->desc.prerequisiteHandle != 0) {
+        backendTaskDesc.prerequisiteHandle = task->desc.prerequisiteHandle;
+    }
+    for (size_t i = 0; i < nShard; i++) {
+        auto& shard = task->desc[i];
+        backendTaskDesc.push_back(Detail::Shard{shard.owner, shard.index, shard.addrs});
+    }
+    auto tpMakeDesc = NowTime::Now();
+    if (backendTaskDesc.empty()) { return Status::OK(); }
+    auto res = backend_->Dump(std::move(backendTaskDesc));
+    if (!res) [[unlikely]] {
+        UC_ERROR("Failed({}) to submit gds dump task({}) to backend.", res.Error(), task->id);
+        return res.Error();
+    }
+    DumpCtx dumpCtx;
+    dumpCtx.taskHandle = task->id;
+    dumpCtx.backendTaskHandle = res.Value();
+    dumping_.Push(std::move(dumpCtx));
+    auto tpEnd = NowTime::Now();
+    UC_DEBUG("GDS dump task({}) mk_desc={:.3f}ms, back={:.3f}ms.", task->id,
+             (tpMakeDesc - tp) * 1e3, (tpEnd - tpMakeDesc) * 1e3);
     return Status::OK();
 }
 

@@ -32,6 +32,7 @@ namespace UC::CacheStore {
 struct Config {
     StoreV1* storeBackend{};
     std::string uniqueId{};
+    std::string ioEngine{};  // "gds" enables zero-copy GPU direct storage
     int32_t deviceId{-1};
     std::vector<size_t> tensorSizes{};
     size_t shardSize{0};

@@ -25,6 +25,9 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_TRANS_MANAGER_H
 
 #include "io_engine_aio.h"
+#ifdef UCM_ENABLE_GDS
+#include "io_engine_gds.h"
+#endif
 #include "io_engine_psync.h"
 
 namespace UC::PosixStore {
@@ -43,6 +46,16 @@ public:
             ioEngine_ = &ioEnginePsync_;
             return ioEnginePsync_.Setup(config, layout);
         }
+#ifdef UCM_ENABLE_GDS
+        if (config.ioEngine == "gds") {
+            ioEngine_ = &ioEngineGds_;
+            return ioEngineGds_.Setup(config, layout);
+        }
+#else
+        if (config.ioEngine == "gds") {
+            return Status::InvalidParam("gds engine not enabled, rebuild with -DENABLE_GDS=ON");
+        }
+#endif
         return Status::InvalidParam("invalid io engine({})", config.ioEngine);
     }
     IoEngine* GetIoEngine() const { return ioEngine_; }
@@ -50,6 +63,9 @@ public:
 private:
     IoEngineAio ioEngineAio_;
     IoEnginePsync ioEnginePsync_;
+#ifdef UCM_ENABLE_GDS
+    IoEngineGds ioEngineGds_;
+#endif
     IoEngine* ioEngine_{nullptr};
 };
 

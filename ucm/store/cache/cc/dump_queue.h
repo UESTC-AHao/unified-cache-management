@@ -57,6 +57,7 @@ private:
     std::vector<size_t> tensorSizes_{};
     size_t streamNumber_{1};
     std::vector<ssize_t> cpuAffinityCores_{};
+    bool gdsMode_{false};
     SpscRingQueue<TaskPair> waiting_;
     SpscRingQueue<DumpCtx> dumping_;
     std::thread dispatcher_;
@@ -70,7 +71,9 @@ public:
 private:
     void DispatchStage(std::promise<Status>& started);
     void DispatchOneTask(CopyStream& stream, TaskPair&& pair);
+    void DispatchOneTaskGds(TaskPair&& pair);
     Status DumpOneTask(CopyStream& stream, TaskPtr task);
+    Status DumpOneTaskGds(TaskPtr task);
     Status DeviceToHostGatherAsync(std::shared_ptr<Trans::Stream> stream, void** device,
                                    void* host);
     void BackendDumpStage();

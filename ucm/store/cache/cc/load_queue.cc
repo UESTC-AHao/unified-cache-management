@@ -43,6 +43,7 @@ Status LoadQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     tensorSizes_ = config.tensorSizes;
     streamNumber_ = config.streamNumber;
     cpuAffinityCores_ = config.cpuAffinityCores;
+    gdsMode_ = (config.ioEngine == "gds");
     waiting_.Setup(config.waitingQueueDepth);
     running_.Setup(config.runningQueueDepth);
     holder_.reserve(1024);
@@ -83,7 +84,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
     auto tp = waiter->startTp;
     auto tpWait = NowTime::Now();
     Detail::TaskDesc backendTaskDesc;
-    backendTaskDesc.brief = "Backend2Cache";
+    backendTaskDesc.brief = gdsMode_ ? "Storage2GPU" : "Backend2Cache";
     const auto nShard = task->desc.size();
     UC_DEBUG("Try to load ({}) shards.", nShard);
     std::vector<size_t> backendTaskIndex;
@@ -92,12 +93,18 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
     for (size_t i = 0; i < nShard; i++) {
         auto& shard = task->desc[i];
         auto& shardTask = shardTasks[i];
-        shardTask.bufferHandle = buffer_->Get(shard.owner, shard.index);
         shardTask.backendTaskHandle = 0;
-        if (shardTask.bufferHandle.Owner() && !shardTask.bufferHandle.Ready()) {
+        if (gdsMode_) {
             backendTaskDesc.push_back(
-                Detail::Shard{shard.owner, shard.index, {shardTask.bufferHandle.Data()}});
+                Detail::Shard{shard.owner, shard.index, shard.addrs});
             backendTaskIndex.emplace_back(i);
+        } else {
+            shardTask.bufferHandle = buffer_->Get(shard.owner, shard.index);
+            if (shardTask.bufferHandle.Owner() && !shardTask.bufferHandle.Ready()) {
+                backendTaskDesc.push_back(
+                    Detail::Shard{shard.owner, shard.index, {shardTask.bufferHandle.Data()}});
+                backendTaskIndex.emplace_back(i);
+            }
         }
         shardTask.taskHandle = task->id;
         shardTask.shard = std::move(shard);
@@ -140,6 +147,19 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
         return;
     }
     auto s = Status::OK();
+    if (gdsMode_) {
+        if (task.backendTaskHandle > finishedBackendTaskHandle_) {
+            s = backend_->Wait(task.backendTaskHandle);
+            finishedBackendTaskHandle_ = task.backendTaskHandle;
+            if (s.Failure()) [[unlikely]] {
+                UC_ERROR("Failed({}) to wait gds backend({}) for task({}).", s,
+                         task.backendTaskHandle, task.taskHandle);
+            }
+        }
+        if (s.Failure()) [[unlikely]] { failureSet_->Insert(task.taskHandle); }
+        if (task.waiter) { task.waiter->Done(); }
+        return;
+    }
     do {
         s = WaitBackendTaskReady(task);
         if (s.Failure()) [[unlikely]] { break; }

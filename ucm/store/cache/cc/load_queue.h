@@ -59,6 +59,7 @@ private:
     std::vector<size_t> tensorSizes_{};
     size_t streamNumber_{1};
     std::vector<ssize_t> cpuAffinityCores_{};
+    bool gdsMode_{false};
     SpscRingQueue<TaskPair> waiting_;
     SpscRingQueue<ShardTask> running_;
     std::thread dispatcher_;
