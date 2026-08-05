@@ -1,6 +1,6 @@
 # Set to other image if needed
 ARG IMAGE_SOURCE="quay.io/ascend"
-ARG IMAGE_NAME_VERSION="vllm-ascend:DeepSeekV4-flash-0731-a3"
+ARG IMAGE_NAME_VERSION="vllm-ascend:DeepSeekV4-flash-0731-a3-openeuler"
 
 FROM ${IMAGE_SOURCE}/${IMAGE_NAME_VERSION}
 
