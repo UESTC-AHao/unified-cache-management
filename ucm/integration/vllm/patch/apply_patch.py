@@ -123,6 +123,9 @@ def get_supported_versions() -> list[str]:
         "0.21.0",
         "0.22.1",
         "0.23.0",
+        "0.24.0",
+        "0.25.1",
+        "0.26.0",
     ]
 
 
@@ -155,6 +158,9 @@ def apply_all_patches() -> None:
             "0.20.2",
             "0.22.1",
             "0.23.0",
+            "0.24.0",
+            "0.25.1",
+            "0.26.0",
         }:
             logger.info("UCM patching vllm-ascend UCM connector metrics alias...")
             import ucm.integration.vllm.patch.ucm_connector_registration_patch
@@ -229,6 +235,27 @@ def apply_all_patches() -> None:
                 import ucm.integration.vllm.patch.v0230.vllm_ascend.ascend_hybrid_cache_patch
                 import ucm.integration.vllm.patch.v0230.vllm_ascend.cpu_binding_patch
                 import ucm.integration.vllm.patch.v0230.vllm_ascend.sfa_kv_transfer_patch
+            case "0.24.0":
+                logger.info(
+                    "UCM patching vllm-ascend 0.24.0 for hybrid cache "
+                    "recovery and CPU affinity..."
+                )
+                import ucm.integration.vllm.patch.v0240.vllm_ascend.ascend_hybrid_cache_patch
+                import ucm.integration.vllm.patch.v0240.vllm_ascend.cpu_binding_patch
+            case "0.25.1":
+                logger.info(
+                    "UCM patching vllm-ascend 0.25.1 for hybrid cache "
+                    "recovery and CPU affinity..."
+                )
+                import ucm.integration.vllm.patch.v0251.vllm_ascend.ascend_hybrid_cache_patch
+                import ucm.integration.vllm.patch.v0251.vllm_ascend.cpu_binding_patch
+            case "0.26.0":
+                logger.info(
+                    "UCM patching vllm-ascend 0.26.0 for hybrid cache "
+                    "recovery and CPU affinity..."
+                )
+                import ucm.integration.vllm.patch.v0260.vllm_ascend.ascend_hybrid_cache_patch
+                import ucm.integration.vllm.patch.v0260.vllm_ascend.cpu_binding_patch
             case _:
                 pass
 

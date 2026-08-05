@@ -1,0 +1,48 @@
+# Set to other image if needed
+ARG IMAGE_SOURCE="quay.io/ascend"
+ARG IMAGE_NAME_VERSION="vllm-ascend:DeepSeekV4-flash-0731-a3"
+
+FROM ${IMAGE_SOURCE}/${IMAGE_NAME_VERSION}
+
+ARG PIP_INDEX_URL="https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+ARG INSTALL_MODE="source"
+
+WORKDIR /workspace
+
+# Install unified-cache-management
+COPY . /workspace/unified-cache-management
+
+RUN pip config set global.index-url ${PIP_INDEX_URL}
+
+ENV UCM_ENGINE_TYPE=vllm-ascend.a3
+
+# Apply UCM git patch to vllm and vllm-ascend source.
+# The patch covers: load-failure multi-group fix, UCM CPU affinity,
+# allocate_new_computed_blocks guard, UCMConnectorV1 alias, and
+# find_longest_cache_hit full-attention truncation.
+RUN cd /vllm-workspace && \
+    git apply --check /workspace/unified-cache-management/ucm/integration/vllm/patch/v0251/v0251-combined.patch && \
+    git apply /workspace/unified-cache-management/ucm/integration/vllm/patch/v0251/v0251-combined.patch
+
+# Disable monkey patch system since the git patch is already applied
+# and the image's package metadata may report a stale version.
+ENV ENABLE_UCM_PATCH=0
+
+# Build or link package
+RUN if [ "${INSTALL_MODE}" != "package" ]; then \
+        pip install --no-cache-dir build cmake && \
+        export WORKSPACE=/workspace SKIP_TAR=1 ENABLE_SPARSE=false && \
+        bash /workspace/unified-cache-management/scripts/build_ascend.sh -p ascend-a3; \
+    else \
+        ln -s /workspace/unified-cache-management /workspace/package; \
+    fi
+
+# Install UCM
+RUN pip install /workspace/package/uc_manager-*.whl
+
+# Run optional post-install hook
+RUN if [ -f /workspace/package/install.sh ]; then \
+        bash /workspace/package/install.sh; \
+    fi
+
+CMD ["/bin/bash"]
