@@ -1245,9 +1245,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 * (1 if self.is_mla else self.num_head * 2)
                 * self.blocks_per_chunk
             )
-        dp_rank = self._vllm_config.parallel_config.data_parallel_rank
         config["posix_gc_enable"] = (
-            self._role != KVConnectorRole.WORKER and dp_rank == 0
+            self._role != KVConnectorRole.WORKER
         )
         logger.info(f"create {name} with config: {config}")
         return UcmConnectorFactoryV1.create_connector(name, config, module_path)
