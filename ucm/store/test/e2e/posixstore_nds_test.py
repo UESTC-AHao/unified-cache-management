@@ -43,6 +43,7 @@ posix_data_trans_concurrency = 32
 bench = False
 check_only = False
 no_event_sync = False
+reuse_block_ids = False
 ACL_MEM_MALLOC_HUGE_FIRST = 0
 ACL_MEM_MALLOC_HUGE_ONLY = 1
 ACL_MEM_MALLOC_NORMAL_ONLY = 2
@@ -93,6 +94,15 @@ def parse_args(argv=None):
         help="Run the throughput benchmark instead of the correctness check",
     )
     parser.add_argument(
+        "--reuse-block-ids",
+        action="store_true",
+        help=(
+            "Reuse one set of block ids for every epoch, so each epoch rewrites "
+            "the same files. Default is fresh ids per epoch, which opens and "
+            "registers block-number files that were never opened before"
+        ),
+    )
+    parser.add_argument(
         "--check-only",
         action="store_true",
         help="Only report device address alignment, then exit without any I/O",
@@ -121,6 +131,7 @@ def apply_args(args):
     global bench
     global check_only
     global no_event_sync
+    global reuse_block_ids
     global malloc_policy
 
     worker_number = args.worker_number
@@ -136,6 +147,7 @@ def apply_args(args):
     bench = args.bench
     check_only = args.check_only
     no_event_sync = args.no_event_sync
+    reuse_block_ids = args.reuse_block_ids
     malloc_policy = {
         "torch": -1,
         "huge-first": ACL_MEM_MALLOC_HUGE_FIRST,
@@ -398,10 +410,14 @@ def worker_loop(device_id, barrier):
         correctness_test(device_id, store, block_ids, src_tensors, block_ptr)
         return
 
-    epoch_ids = [
-        [secrets.token_bytes(16) for _ in range(block_number)]
-        for _ in range(dump_epoch_number)
-    ]
+    if reuse_block_ids:
+        shared = [secrets.token_bytes(16) for _ in range(block_number)]
+        epoch_ids = [shared] * dump_epoch_number
+    else:
+        epoch_ids = [
+            [secrets.token_bytes(16) for _ in range(block_number)]
+            for _ in range(dump_epoch_number)
+        ]
     for epoch in range(dump_epoch_number):
         dump(epoch, device_id, store, epoch_ids[epoch], block_ptr)
         barrier.wait()

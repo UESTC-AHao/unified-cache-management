@@ -198,7 +198,6 @@ private:
         inConfig.Get("io_direct", config.ioDirect);
         inConfig.Get("cpu_affinity_cores", config.cpuAffinityCores);
         inConfig.GetNumber("posix_data_trans_concurrency", config.dataTransConcurrency);
-        inConfig.GetNumber("posix_nds_handle_pool_size", config.ndsHandlePoolSize);
         inConfig.GetNumber("posix_lookup_concurrency", config.lookupConcurrency);
         inConfig.GetNumber("posix_open_concurrency", config.openConcurrency);
         inConfig.GetNumber("posix_commit_concurrency", config.commitConcurrency);

@@ -42,8 +42,6 @@ struct Config {
     bool ioDirect{true};
     std::vector<ssize_t> cpuAffinityCores{};
     size_t dataTransConcurrency{128};
-    /** Registered NDS files kept open for reuse; only the nds engine reads it. */
-    size_t ndsHandlePoolSize{1024};
     size_t lookupConcurrency{16};
     size_t openConcurrency{32};
     size_t commitConcurrency{4};

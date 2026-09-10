@@ -123,20 +123,6 @@ public:
     Status Remove();
 
     /**
-     * @brief Give up the handle and fd without deregistering or closing them.
-     *
-     * Only for process teardown. NdsFileHandleDeregister blocks for seconds, so
-     * draining a full handle pool at exit would stall for a long time; the
-     * kernel reclaims the fd and the driver state when the process goes away,
-     * the same reasoning that leaves the NDS driver itself open.
-     */
-    void Abandon() noexcept
-    {
-        registered_ = false;
-        handle_ = -1;
-    }
-
-    /**
      * @brief Read storage into device memory (S2H).
      *
      * @param devPtr Device (HBM) destination address.

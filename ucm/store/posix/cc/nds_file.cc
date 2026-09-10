@@ -182,9 +182,6 @@ Status NdsFile::Open(uint32_t flags, size_t reserveSize)
 void NdsFile::Close()
 {
     // Deregister before closing the fd: the handle refers to that descriptor.
-    // This blocks for seconds (~2034ms measured), which is why NdsHandlePool
-    // keeps registered files open instead of tearing one down per transfer, and
-    // why it runs retirement on a background thread.
     if (registered_) {
         auto tp = NowTime::Now();
         NdsFileHandleDeregister(ndsHandle_);

@@ -25,12 +25,9 @@
 
 #if UCM_ENABLE_NDS
 
-#include <algorithm>
 #include <numeric>
-#include <utility>
 #include "logger/logger.h"
 #include "metrics_api.h"
-#include "nds_handle_pool.h"
 #include "trans/device.h"
 
 namespace UC::PosixStore {
@@ -79,12 +76,6 @@ Status NdsQueue::Setup(const Config& config, TaskIdSet* failureSet, const SpaceL
     blockSize_ = config.blockSize;
     nShardPerBlock_ = config.blockSize / config.shardSize;
     timeoutMs_ = config.timeoutMs;
-    // The pool has to hold at least as many entries as there are files being
-    // transferred at once, otherwise entries are evicted while still in use and
-    // no reuse ever happens. Concurrency is that bound: one worker touches one
-    // file at a time.
-    NdsHandlePool::Instance().Reserve(
-        std::max(config.ndsHandlePoolSize, config.dataTransConcurrency));
 
     auto success =
         loadPool_.SetNWorker(config.dataTransConcurrency)
@@ -197,11 +188,6 @@ void NdsQueue::DumpWorker(IoUnit& ios)
     }
     auto s = H2S(ios);
     if (ios.shard.index + 1 == nShardPerBlock_) {
-        // Drop the pooled handle before committing: CommitFile renames the .tmp
-        // away (or removes it on failure), so the key would otherwise keep
-        // naming a handle onto an inode that no longer answers to that path.
-        // H2S's lease is already released here -- this is the last shard.
-        NdsHandlePool::Instance().Invalidate(layout_->DataFilePath(ios.shard.owner, true));
         layout_->CommitFile(ios.shard.owner, s.Success());
     }
     if (s.Failure()) [[unlikely]] {
@@ -300,29 +286,28 @@ Status NdsQueue::Transfer(NdsFile& file, const Detail::Shard& shard, bool dump)
 Status NdsQueue::H2S(IoUnit& ios)
 {
     const auto& path = layout_->DataFilePath(ios.shard.owner, true);
+    NdsFile file{path};
     // NDS writes never extend the file, so the block is sized on first open.
-    auto lease = NdsHandlePool::Instance().Acquire(
-        path, NdsFile::OpenFlag::CREATE | NdsFile::OpenFlag::WRITE_ONLY, blockSize_);
-    if (!lease) [[unlikely]] {
-        UC_ERROR("Failed({}) to open file({}) for nds write.", lease.Error(), path);
+    auto s = file.Open(NdsFile::OpenFlag::CREATE | NdsFile::OpenFlag::WRITE_ONLY, blockSize_);
+    if (s.Failure()) [[unlikely]] {
+        UC_ERROR("Failed({}) to open file({}) for nds write.", s, path);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_open_errors_total"), 1.0);
-        return lease.Error();
+        return s;
     }
-    auto held = std::move(lease).Value();
-    return Transfer(held.File(), ios.shard, true);
+    return Transfer(file, ios.shard, true);
 }
 
 Status NdsQueue::S2H(IoUnit& ios)
 {
     const auto& path = layout_->DataFilePath(ios.shard.owner, false);
-    auto lease = NdsHandlePool::Instance().Acquire(path, NdsFile::OpenFlag::READ_ONLY, 0);
-    if (!lease) [[unlikely]] {
-        UC_ERROR("Failed({}) to open file({}) for nds read.", lease.Error(), path);
+    NdsFile file{path};
+    auto s = file.Open(NdsFile::OpenFlag::READ_ONLY);
+    if (s.Failure()) [[unlikely]] {
+        UC_ERROR("Failed({}) to open file({}) for nds read.", s, path);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_open_errors_total"), 1.0);
-        return lease.Error();
+        return s;
     }
-    auto held = std::move(lease).Value();
-    return Transfer(held.File(), ios.shard, false);
+    return Transfer(file, ios.shard, false);
 }
 
 }  // namespace UC::PosixStore
