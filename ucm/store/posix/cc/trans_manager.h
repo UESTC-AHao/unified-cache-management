@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_TRANS_MANAGER_H
 
 #include "io_engine_aio.h"
+#include "io_engine_nds.h"
 #include "io_engine_psync.h"
 
 namespace UC::PosixStore {
@@ -43,6 +44,14 @@ public:
             ioEngine_ = &ioEnginePsync_;
             return ioEnginePsync_.Setup(config, layout);
         }
+        if (config.ioEngine == "nds") {
+#if UCM_ENABLE_NDS
+            ioEngine_ = &ioEngineNds_;
+            return ioEngineNds_.Setup(config, layout);
+#else
+            return Status::InvalidParam("nds io engine was not built, libndsfs was not found");
+#endif
+        }
         return Status::InvalidParam("invalid io engine({})", config.ioEngine);
     }
     IoEngine* GetIoEngine() const { return ioEngine_; }
@@ -50,6 +59,9 @@ public:
 private:
     IoEngineAio ioEngineAio_;
     IoEnginePsync ioEnginePsync_;
+#if UCM_ENABLE_NDS
+    IoEngineNds ioEngineNds_;
+#endif
     IoEngine* ioEngine_{nullptr};
 };
 

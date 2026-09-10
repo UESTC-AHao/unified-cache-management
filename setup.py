@@ -36,6 +36,9 @@ ENABLE_SPARSE = os.getenv("ENABLE_SPARSE")
 ENABLE_MINDIE = os.getenv("UCM_ENABLE_MINDIE", "0") not in ("", "0", "false", "False")
 ENABLE_GDR = os.getenv("ENABLE_GDR", "0") not in ("", "0", "false", "False")
 ASCEND_ROOT = os.getenv("ASCEND_ROOT")
+# Install root of the DataTurbo NDS package, which sits outside the CANN tree.
+# Only needed when it is not at the default path baked into posix/CMakeLists.txt.
+NDS_ROOT = os.getenv("NDS_ROOT")
 
 
 def get_abi_flag_from_env() -> str:
@@ -174,6 +177,9 @@ class CMakeBuild(build_ext):
 
         if ASCEND_ROOT:
             cmake_args += [f"-DASCEND_ROOT={ASCEND_ROOT}"]
+
+        if NDS_ROOT:
+            cmake_args += [f"-DNDS_ROOT={NDS_ROOT}"]
 
         match PLATFORM:
             case "cuda":

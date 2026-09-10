@@ -33,12 +33,17 @@ struct Config {
     std::vector<std::string> storageBackends{};
     int32_t deviceId{-1};
     size_t tensorSize{0};
+    /** Per-tensor sizes inside one shard; only the nds engine transfers at
+     *  tensor granularity, aio and psync use tensorSize directly. */
+    std::vector<size_t> tensorSizes{};
     size_t shardSize{0};
     size_t blockSize{0};
-    std::string ioEngine{"psync"};  // "aio", "psync"
+    std::string ioEngine{"psync"};  // "aio", "psync", "nds"
     bool ioDirect{true};
     std::vector<ssize_t> cpuAffinityCores{};
     size_t dataTransConcurrency{128};
+    /** Registered NDS files kept open for reuse; only the nds engine reads it. */
+    size_t ndsHandlePoolSize{1024};
     size_t lookupConcurrency{16};
     size_t openConcurrency{32};
     size_t commitConcurrency{4};

@@ -73,6 +73,7 @@ developer-guide/contribute
 developer-guide/deepdive_ucm
 developer-guide/add_metrics
 developer-guide/extending_store
+developer-guide/nds_io_engine
 :::
 
 :::{toctree}

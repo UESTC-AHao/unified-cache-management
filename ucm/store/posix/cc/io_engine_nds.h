@@ -1,0 +1,84 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
+#ifndef UNIFIEDCACHE_POSIX_STORE_CC_IO_ENGINE_NDS_H
+#define UNIFIEDCACHE_POSIX_STORE_CC_IO_ENGINE_NDS_H
+
+#include "nds_queue.h"
+
+#if UCM_ENABLE_NDS
+
+#include "logger/logger.h"
+#include "metrics_api.h"
+#include "template/task_wrapper.h"
+
+namespace UC::PosixStore {
+
+class IoEngineNds : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
+    NdsQueue queue_;
+    size_t shardSize_;
+
+public:
+    Status Setup(const Config& config, const SpaceLayout* layout)
+    {
+        timeoutMs_ = config.timeoutMs;
+        shardSize_ = config.shardSize;
+        return queue_.Setup(config, &failureSet_, layout);
+    }
+
+protected:
+    Status FailureStatus(const TaskPtr& task) const override { return task->FailureStatus(); }
+    void Dispatch(TaskPtr t, WaiterPtr w) override
+    {
+        const auto id = t->id;
+        const auto& brief = t->desc.brief;
+        const auto num = t->desc.size();
+        const auto size = shardSize_ * num;
+        const auto tp = w->startTp;
+        const auto isDump = (t->type == TransTask::Type::DUMP);
+        UC_DEBUG("Nds task({},{},{},{}) dispatching.", id, brief, num, size);
+        w->SetEpilog([id, brief = std::move(brief), num, size, tp, isDump] {
+            auto cost = NowTime::Now() - tp;
+            auto costMs = cost * 1e3;
+            auto bwGbps = cost > 0 ? static_cast<double>(size) / cost / 1e9 : 0.0;
+            UC_DEBUG("Nds task({},{},{},{}) finished, cost {:.3f}ms.", id, brief, num, size, costMs);
+            static UC::Metrics::CachedMetric loadDuration{"posix_load_task_duration_ms"};
+            static UC::Metrics::CachedMetric dumpDuration{"posix_dump_task_duration_ms"};
+            static UC::Metrics::CachedMetric loadBandwidth{"posix_s2h_bandwidth_gbps"};
+            static UC::Metrics::CachedMetric dumpBandwidth{"posix_h2s_bandwidth_gbps"};
+            static UC::Metrics::CachedMetric loadBytes{"posix_s2h_bytes_total"};
+            static UC::Metrics::CachedMetric dumpBytes{"posix_h2s_bytes_total"};
+            UC::Metrics::UpdateStats(isDump ? dumpDuration : loadDuration, costMs);
+            UC::Metrics::UpdateStats(isDump ? dumpBandwidth : loadBandwidth, bwGbps);
+            UC::Metrics::UpdateStats(isDump ? dumpBytes : loadBytes, static_cast<double>(size));
+        });
+        queue_.Push(t, w);
+    }
+    void Cancel(TaskPtr t) override { queue_.Cancel(t); }
+};
+
+}  // namespace UC::PosixStore
+
+#endif  // UCM_ENABLE_NDS
+
+#endif
