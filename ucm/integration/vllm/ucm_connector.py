@@ -124,6 +124,15 @@ def _get_store_io_sizes(
     return physical_shard_size, physical_shard_size * shard_count
 
 
+def _is_device_passthrough_pipeline(config: dict[str, Any]) -> bool:
+    """Whether this store config moves KV straight between HBM and storage.
+
+    The NDS passthrough pipeline has no CacheStore stage, so the host-side
+    cache buffer that the other pipelines rely on is neither allocated nor used.
+    """
+    return str(config.get("store_pipeline", "")) == "Delegator|Posix"
+
+
 def _get_store_gc_block_size(
     store_pipeline: str,
     tensor_size_list: list[int],
@@ -1304,6 +1313,17 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
     def _set_default_shm_buffer_capacity(self, config: dict[str, Any]) -> None:
         if not bool(config.get("share_buffer_enable", False)):
+            return
+        if _is_device_passthrough_pipeline(config):
+            # No CacheStore in this pipeline, so nothing consumes the host
+            # shared buffer. Reserving 128GB of /dev/shm for it would fail the
+            # capacity check for a buffer that is never allocated.
+            config["share_buffer_enable"] = False
+            logger.info(
+                "Disable share_buffer_enable for %s: the device passthrough "
+                "path keeps no host-side cache buffer.",
+                config.get("store_pipeline"),
+            )
             return
         if config.get("cache_buffer_capacity_gb") is None:
             config["cache_buffer_capacity_gb"] = 128

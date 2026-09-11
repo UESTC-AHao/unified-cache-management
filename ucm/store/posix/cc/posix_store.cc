@@ -187,10 +187,18 @@ private:
         inConfig.GetNumber("tensor_size", config.tensorSize);
         inConfig.GetNumber("shard_size", config.shardSize);
         inConfig.GetNumber("block_size", config.blockSize);
+        // Uniform tensor sizes arrive as a single tensor_size; a heterogeneous
+        // layout (e.g. an MLA or Indexer model) arrives as the full list.
+        if (config.tensorSize != 0 && config.shardSize != 0) {
+            config.tensorSizes.assign(config.shardSize / config.tensorSize, config.tensorSize);
+        } else {
+            inConfig.GetNumbers("tensor_size_list", config.tensorSizes);
+        }
         inConfig.Get("posix_io_engine", config.ioEngine);
         inConfig.Get("io_direct", config.ioDirect);
         inConfig.Get("cpu_affinity_cores", config.cpuAffinityCores);
         inConfig.GetNumber("posix_data_trans_concurrency", config.dataTransConcurrency);
+        inConfig.GetNumber("posix_nds_handle_pool_size", config.ndsHandlePoolSize);
         inConfig.GetNumber("posix_lookup_concurrency", config.lookupConcurrency);
         inConfig.GetNumber("posix_open_concurrency", config.openConcurrency);
         inConfig.GetNumber("posix_commit_concurrency", config.commitConcurrency);
@@ -299,24 +307,38 @@ private:
             }
         }
         if (config.deviceId == -1) { return Status::OK(); }
-        if (config.tensorSize == 0 || config.shardSize < config.tensorSize ||
-            config.blockSize < config.shardSize || config.shardSize % config.tensorSize != 0 ||
+        if (config.shardSize == 0 || config.blockSize < config.shardSize ||
             config.blockSize % config.shardSize != 0) {
-            return Status::InvalidParam("invalid size({},{},{})", config.tensorSize,
-                                        config.shardSize, config.blockSize);
+            return Status::InvalidParam("invalid size({},{})", config.shardSize, config.blockSize);
         }
         if (config.ioEngine == "aio") {
             if (config.openConcurrency == 0 || config.commitConcurrency == 0) {
                 return Status::InvalidParam("invalid aio concurrency({},{})",
                                             config.openConcurrency, config.commitConcurrency);
             }
-        } else if (config.ioEngine == "psync") {
+        } else if (config.ioEngine == "psync" || config.ioEngine == "nds") {
             if (config.dataTransConcurrency == 0) {
-                return Status::InvalidParam("invalid psync concurrency({})",
+                return Status::InvalidParam("invalid {} concurrency({})", config.ioEngine,
                                             config.dataTransConcurrency);
             }
         } else {
             return Status::InvalidParam("invalid io engine({})", config.ioEngine);
+        }
+        if (config.tensorSize != 0) {
+            if (config.shardSize < config.tensorSize ||
+                config.shardSize % config.tensorSize != 0) {
+                return Status::InvalidParam("invalid size({},{},{})", config.tensorSize,
+                                            config.shardSize, config.blockSize);
+            }
+        } else if (config.ioEngine == "nds") {
+            // The nds engine transfers tensor by tensor, so it also accepts a
+            // heterogeneous tensor_size_list where aio and psync need one size.
+            if (config.tensorSizes.empty()) {
+                return Status::InvalidParam("invalid tensor size");
+            }
+        } else {
+            return Status::InvalidParam("invalid tensor size({}) for io engine({})",
+                                        config.tensorSize, config.ioEngine);
         }
         return Status::OK();
     }
@@ -329,6 +351,7 @@ private:
         UC_INFO("Set {}::StorageBackends to {}.", ns, config.storageBackends);
         UC_INFO("Set {}::DeviceId to {}.", ns, config.deviceId);
         UC_INFO("Set {}::TensorSize to {}.", ns, config.tensorSize);
+        UC_INFO("Set {}::TensorSizeCount to {}.", ns, config.tensorSizes.size());
         UC_INFO("Set {}::ShardSize to {}.", ns, config.shardSize);
         UC_INFO("Set {}::BlockSize to {}.", ns, config.blockSize);
         UC_INFO("Set {}::IoEngine to {}.", ns, config.ioEngine);

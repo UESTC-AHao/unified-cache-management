@@ -129,24 +129,34 @@ Status DelegatorStore::Setup(const Detail::Dictionary& input)
     if (!parsed) { return parsed.Error(); }
     auto config = std::move(parsed).Value();
 
-    const auto factory = backendFactory.load(std::memory_order_acquire);
-    if (factory == nullptr) {
-        // Backend binding is intentionally deferred to a follow-up integration.
-        UC_WARN("DelegatorStore has no backend implementation configured.");
-        return Status::Unsupported();
-    }
+    // Two ways to get a backend. A pipeline ("Delegator|Posix") stacks the lower
+    // store first and hands it over as a borrowed pointer that PipelineStore
+    // owns and has already Setup(); the registered factory is the standalone
+    // path, where this store creates and sets up the backend itself.
+    StoreV1* stacked = nullptr;
+    input.Get("store_backend", stacked);
+    if (stacked != nullptr) {
+        // Non-owning: PipelineStore outlives every store it stacked, and calling
+        // Setup() a second time on it would be wrong.
+        backend_ = std::shared_ptr<StoreV1>(stacked, [](StoreV1*) {});
+    } else {
+        const auto factory = backendFactory.load(std::memory_order_acquire);
+        if (factory == nullptr) {
+            UC_WARN("DelegatorStore has no backend: neither a stacked store nor a factory.");
+            return Status::Unsupported();
+        }
+        try {
+            backend_ = std::shared_ptr<StoreV1>(factory());
+        } catch (const std::bad_alloc&) {
+            return Status::OutOfMemory();
+        }
+        if (!backend_) { return Status::Error("Delegator backend factory returned null"); }
 
-    try {
-        backend_ = std::shared_ptr<StoreV1>(factory());
-    } catch (const std::bad_alloc&) {
-        return Status::OutOfMemory();
-    }
-    if (!backend_) { return Status::Error("Delegator backend factory returned null"); }
-
-    auto status = backend_->Setup(input);
-    if (status.Failure()) {
-        backend_.reset();
-        return status;
+        auto status = backend_->Setup(input);
+        if (status.Failure()) {
+            backend_.reset();
+            return status;
+        }
     }
 
     if (config.deviceId < 0) {

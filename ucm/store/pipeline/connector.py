@@ -318,6 +318,74 @@ def _delegator_pipeline_builder(
     )
 
 
+_NDS_ALIGNMENT = 4096
+
+
+def _delegator_posix_pipeline_builder(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+):
+    """Stack the NDS passthrough path: Delegator gathers, Posix does the I/O.
+
+    NDS moves data straight between device HBM and an O_DIRECT file, so no host
+    staging buffer is involved and there is no CacheStore stage here.
+
+    Delegator gathers each shard's tensors into one contiguous device buffer
+    (D2D, no host bounce) before handing them down. Those per-tensor addresses
+    come out adjacent, which lets the Posix NDS engine coalesce them into a
+    single large transfer -- both to avoid one driver call per tensor and to put
+    the 4K alignment requirement on the merged span instead of on each tensor.
+    """
+    io_engine = config.get("posix_io_engine", "psync")
+    if io_engine != "nds":
+        raise ValueError(
+            f"Delegator|Posix requires posix_io_engine=nds, got {io_engine!r}"
+        )
+    if not config.get("io_direct", True):
+        raise ValueError("Delegator|Posix requires io_direct=true: NDS opens O_DIRECT")
+
+    store_dir = Path(__file__).resolve().parent.parent
+    if config.get("device_id", -1) >= 0:
+        shard_size = int(config["shard_size"])
+        block_size = int(config["block_size"])
+        # Shard N lives at shard_size * N, so this is the file offset rule.
+        if shard_size <= 0 or shard_size % _NDS_ALIGNMENT:
+            raise ValueError(
+                f"Delegator|Posix shard_size={shard_size} must be a positive "
+                f"multiple of {_NDS_ALIGNMENT}"
+            )
+        if block_size <= 0 or block_size % shard_size:
+            raise ValueError(
+                f"Delegator|Posix block_size={block_size} must be a positive "
+                f"multiple of shard_size={shard_size}"
+            )
+        tensor_sizes = config.get("tensor_size_list")
+        if not tensor_sizes:
+            raise ValueError("tensor_size_list is required for Delegator|Posix")
+        payload = sum(int(size) for size in tensor_sizes)
+        if payload > shard_size:
+            raise ValueError(
+                f"Delegator|Posix tensor payload={payload} overflows "
+                f"shard_size={shard_size}"
+            )
+        # The merged span is the gathered payload, so it carries the alignment
+        # rule that individual tensors do not have to satisfy.
+        if payload % _NDS_ALIGNMENT:
+            raise ValueError(
+                f"Delegator|Posix gathered payload={payload} must be a multiple "
+                f"of {_NDS_ALIGNMENT}: it is transferred as one NDS I/O"
+            )
+        # Delegator owns the device staging pool; size one if the user did not.
+        # Each slot costs one gathered shard of HBM.
+        config = copy.deepcopy(config)
+        config.setdefault("delegator_buffer_number", 64)
+
+    _preload_metrics(store_dir)
+    pipeline.Stack("Posix", str(store_dir / "posix/libposixstore.so"), config)
+    pipeline.Stack(
+        "Delegator", str(store_dir / "delegator/libdelegator_store.so"), config
+    )
+
+
 def _yuanrong_pipeline_builder(
     config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
 ):
@@ -393,6 +461,7 @@ UcmPipelineStoreBuilder.register("Cache|Fake", _cache_fake_pipeline_builder)
 UcmPipelineStoreBuilder.register("Mooncake", _mooncake_pipeline_builder)
 UcmPipelineStoreBuilder.register("Mooncake|Posix", _mooncake_posix_pipeline_builder)
 UcmPipelineStoreBuilder.register("Delegator", _delegator_pipeline_builder)
+UcmPipelineStoreBuilder.register("Delegator|Posix", _delegator_posix_pipeline_builder)
 UcmPipelineStoreBuilder.register("YuanRong", _yuanrong_pipeline_builder)
 UcmPipelineStoreBuilder.register("YuanRong|Posix", _yuanrong_posix_pipeline_builder)
 UcmPipelineStoreBuilder.register("Dram", _dram_pipeline_builder)
