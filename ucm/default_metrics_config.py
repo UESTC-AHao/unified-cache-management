@@ -145,6 +145,22 @@ _COUNTER_METRICS = [
         "Number of Posix read, write, or AIO completion failures",
     ),
     (
+        "posix_handle_cache_hit_total",
+        "Number of Posix load handle-cache hits",
+    ),
+    (
+        "posix_handle_cache_miss_total",
+        "Number of Posix load handle-cache misses",
+    ),
+    (
+        "posix_handle_cache_evict_total",
+        "Number of Posix load handle-cache CLOCK evictions",
+    ),
+    (
+        "posix_handle_cache_bypass_total",
+        "Number of Posix load opens that skipped the handle cache",
+    ),
+    (
         "yuanrong_load_success_shards_total",
         "Shards successfully loaded from YuanRong to device",
     ),
@@ -542,6 +558,11 @@ _GAUGE_METRICS = [
     (
         "posix_gc_running",
         "Posix garbage collection state, where 1 is running and 0 is idle",
+        {"multiprocess_mode": 'livemostrecent'},
+    ),
+    (
+        "posix_handle_cache_live",
+        "Number of live Posix load file handles currently cached",
         {"multiprocess_mode": 'livemostrecent'},
     ),
     (
