@@ -43,7 +43,6 @@ HANDLE_CACHE_METRICS = (
     "posix_handle_cache_miss_total",
     "posix_handle_cache_evict_total",
     "posix_handle_cache_bypass_total",
-    "posix_handle_cache_live",
 )
 
 worker_number = 1
@@ -164,15 +163,12 @@ def setup_handle_cache_metrics():
     ucmmetrics.create_stats("posix_handle_cache_miss_total", "counter")
     ucmmetrics.create_stats("posix_handle_cache_evict_total", "counter")
     ucmmetrics.create_stats("posix_handle_cache_bypass_total", "counter")
-    ucmmetrics.create_stats("posix_handle_cache_live", "gauge")
     ucmmetrics.get_all_stats_and_clear()
 
 
 def snapshot_handle_cache_metrics():
-    counters, gauges, _ = ucmmetrics.get_all_stats_and_clear()
-    out = {name: float(counters.get(name, 0.0)) for name in HANDLE_CACHE_METRICS[:-1]}
-    out["posix_handle_cache_live"] = float(gauges.get("posix_handle_cache_live", 0.0))
-    return out
+    counters, _, _ = ucmmetrics.get_all_stats_and_clear()
+    return {name: float(counters.get(name, 0.0)) for name in HANDLE_CACHE_METRICS}
 
 
 def format_handle_cache_metrics(stats):
@@ -183,8 +179,7 @@ def format_handle_cache_metrics(stats):
     return (
         f"hit={hit:.0f}, miss={miss:.0f}, hit_ratio={ratio:.3f}, "
         f"evict={stats['posix_handle_cache_evict_total']:.0f}, "
-        f"bypass={stats['posix_handle_cache_bypass_total']:.0f}, "
-        f"live={stats['posix_handle_cache_live']:.0f}"
+        f"bypass={stats['posix_handle_cache_bypass_total']:.0f}"
     )
 
 

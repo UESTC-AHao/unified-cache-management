@@ -120,11 +120,6 @@ private:
             if (result.error != ECANCELED) { IncrementIoErrorMetric(); }
             task->Fail(!dump && shortIo ? Status::NotFound() : Status::Error());
             failureSet_.Insert(tid);
-            if constexpr (!dump) {
-                if (result.error == ESTALE || result.error == EBADF) {
-                    loadHandles_.Invalidate(id);
-                }
-            }
         }
         if constexpr (dump) {
             if (fd >= 0) { ::close(fd); }

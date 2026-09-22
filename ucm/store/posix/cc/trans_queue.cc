@@ -181,7 +181,6 @@ Status TransQueue::S2H(IoUnit& ios)
         auto nBytes = ::pread(borrowed.Fd(), addr, ioSize_, offset);
         auto eno = errno;
         if (nBytes < 0) [[unlikely]] {
-            if (eno == ESTALE || eno == EBADF) { loadHandles_.Invalidate(ios.shard.owner); }
             UC_ERROR("Failed({}) to read file({}:{}).", eno, path, offset);
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_io_errors_total"), 1.0);
             return Status::OsApiError(std::to_string(eno));

@@ -37,7 +37,6 @@ constexpr auto kNewFilePerm = (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 
 Status LoadHandleCache::Setup(size_t capacity, bool ioDirect)
 {
-    CloseAll();
     openFlags_ = O_RDONLY;
     if (ioDirect) { openFlags_ |= O_DIRECT; }
     if (capacity == 0) {
@@ -50,7 +49,6 @@ Status LoadHandleCache::Setup(size_t capacity, bool ioDirect)
         return Status::OutOfMemory();
     }
     hand_.store(0, std::memory_order_relaxed);
-    live_.store(0, std::memory_order_relaxed);
     return Status::OK();
 }
 
@@ -94,29 +92,6 @@ void LoadHandleCache::Release(BorrowedFd& borrowed)
     if (fd >= 0) { CloseFd(fd); }
 }
 
-void LoadHandleCache::Invalidate(const Detail::BlockId& id)
-{
-    uint32_t slot = kInvalidSlot;
-    {
-        std::unique_lock<std::shared_mutex> lock(indexMutex_);
-        auto it = index_.find(id);
-        if (it == index_.end()) { return; }
-        slot = it->second;
-        index_.erase(it);
-    }
-    if (slot >= slots_.size()) { return; }
-#ifdef UCM_ENABLE_TEST_HOOKS
-    if (skipReclaimOnInvalidate_) { return; }
-#endif
-    if (!TryAcquireWriter(slot)) { return; }
-    auto& entry = slots_[slot];
-    if (entry.state.load(std::memory_order_acquire) == SlotState::Live && entry.id == id) {
-        entry.state.store(SlotState::Tombstone, std::memory_order_release);
-    }
-    ReleaseWriter(slot);
-    TryReclaimIdleTombstone(slot);
-}
-
 void LoadHandleCache::CloseAll()
 {
     {
@@ -126,19 +101,13 @@ void LoadHandleCache::CloseAll()
     for (uint32_t i = 0; i < slots_.size(); ++i) {
         auto& slot = slots_[i];
         if (!TryAcquireWriter(i)) { continue; }
-        const auto state = slot.state.load(std::memory_order_acquire);
-        if (state == SlotState::Live || state == SlotState::Tombstone) {
+        if (slot.fd >= 0) {
             CloseFd(slot.fd);
             slot.fd = -1;
             slot.id = {};
-            AdjustLive(-1);
         }
-        slot.state.store(SlotState::Empty, std::memory_order_release);
-        slot.ref.store(0, std::memory_order_relaxed);
         ReleaseWriter(i);
     }
-    live_.store(0, std::memory_order_relaxed);
-    RecordLive(0);
 }
 
 bool LoadHandleCache::TryPinReader(uint32_t slotIdx, const Detail::BlockId& id)
@@ -153,25 +122,16 @@ bool LoadHandleCache::TryPinReader(uint32_t slotIdx, const Detail::BlockId& id)
         }
         break;
     }
-    if (slot.state.load(std::memory_order_acquire) != SlotState::Live || slot.id != id) {
+    if (slot.fd < 0 || slot.id != id) {
         UnpinReader(slotIdx);
         return false;
     }
-    slot.ref.store(1, std::memory_order_relaxed);
     return true;
 }
 
 void LoadHandleCache::UnpinReader(uint32_t slotIdx)
 {
-    auto& slot = slots_[slotIdx];
-    auto prev = slot.pin.fetch_sub(1, std::memory_order_acq_rel);
-#ifdef UCM_ENABLE_TEST_HOOKS
-    if (skipReclaimOnUnpin_) { return; }
-#endif
-    if (((prev & ~Slot::kWriterBit) == 1) &&
-        slot.state.load(std::memory_order_acquire) == SlotState::Tombstone) {
-        TryReclaimIdleTombstone(slotIdx);
-    }
+    slots_[slotIdx].pin.fetch_sub(1, std::memory_order_acq_rel);
 }
 
 bool LoadHandleCache::TryAcquireWriter(uint32_t slotIdx)
@@ -184,23 +144,6 @@ bool LoadHandleCache::TryAcquireWriter(uint32_t slotIdx)
 void LoadHandleCache::ReleaseWriter(uint32_t slotIdx)
 {
     slots_[slotIdx].pin.store(0, std::memory_order_release);
-}
-
-void LoadHandleCache::TryReclaimIdleTombstone(uint32_t slotIdx)
-{
-    if (!TryAcquireWriter(slotIdx)) { return; }
-    auto& slot = slots_[slotIdx];
-    if (slot.state.load(std::memory_order_acquire) != SlotState::Tombstone) {
-        ReleaseWriter(slotIdx);
-        return;
-    }
-    CloseFd(slot.fd);
-    slot.fd = -1;
-    slot.id = {};
-    slot.state.store(SlotState::Empty, std::memory_order_release);
-    slot.ref.store(0, std::memory_order_relaxed);
-    AdjustLive(-1);
-    ReleaseWriter(slotIdx);
 }
 
 LoadHandleCache::BorrowedFd LoadHandleCache::OptimisticGet(const Detail::BlockId& id)
@@ -235,33 +178,22 @@ LoadHandleCache::BorrowedFd LoadHandleCache::TryInsert(const Detail::BlockId& id
 
     const auto n = slots_.size();
     if (n == 0) { return MakeBorrowed(fd, 0, false, kInvalidSlot); }
-    for (size_t i = 0; i < n * 2; ++i) {
+    for (size_t i = 0; i < n; ++i) {
         auto cur = static_cast<uint32_t>(hand_.fetch_add(1, std::memory_order_relaxed) % n);
         auto& slot = slots_[cur];
         auto pin = slot.pin.load(std::memory_order_acquire);
         if (pin != 0) { continue; }
-        auto state = slot.state.load(std::memory_order_acquire);
-        if (state == SlotState::Live) {
-            uint8_t expectedRef = 1;
-            if (slot.ref.compare_exchange_strong(expectedRef, 0, std::memory_order_relaxed,
-                                                 std::memory_order_relaxed)) {
-                continue;
-            }
-        }
         int32_t closedFd = -1;
         if (!TryOccupyVictim(cur, &closedFd)) { continue; }
         CloseFd(closedFd);
         slot.id = id;
         slot.fd = fd;
-        slot.ref.store(1, std::memory_order_relaxed);
         {
             std::unique_lock<std::shared_mutex> lock(indexMutex_);
             auto it = index_.find(id);
             if (it != index_.end()) {
                 slot.fd = -1;
                 slot.id = {};
-                slot.state.store(SlotState::Empty, std::memory_order_release);
-                slot.ref.store(0, std::memory_order_relaxed);
                 ReleaseWriter(cur);
                 lock.unlock();
                 auto hit = OptimisticGet(id);
@@ -272,10 +204,8 @@ LoadHandleCache::BorrowedFd LoadHandleCache::TryInsert(const Detail::BlockId& id
                 return MakeBorrowed(fd, 0, false, kInvalidSlot);
             }
             index_[id] = cur;
-            slot.state.store(SlotState::Live, std::memory_order_release);
         }
         slot.pin.store(1, std::memory_order_release);
-        AdjustLive(1);
         return MakeBorrowed(fd, 0, true, cur);
     }
     return MakeBorrowed(fd, 0, false, kInvalidSlot);
@@ -285,23 +215,19 @@ bool LoadHandleCache::TryOccupyVictim(uint32_t slotIdx, int32_t* closedFd)
 {
     if (!TryAcquireWriter(slotIdx)) { return false; }
     auto& slot = slots_[slotIdx];
-    const auto state = slot.state.load(std::memory_order_acquire);
-    if (state == SlotState::Live) {
-        std::unique_lock<std::shared_mutex> lock(indexMutex_);
-        auto it = index_.find(slot.id);
-        if (it != index_.end() && it->second == slotIdx) { index_.erase(it); }
-    }
-    if (state == SlotState::Live || state == SlotState::Tombstone) {
+    if (slot.fd >= 0) {
+        {
+            std::unique_lock<std::shared_mutex> lock(indexMutex_);
+            auto it = index_.find(slot.id);
+            if (it != index_.end() && it->second == slotIdx) { index_.erase(it); }
+        }
         *closedFd = slot.fd;
         slot.fd = -1;
         slot.id = {};
-        AdjustLive(-1);
         RecordEvict();
     } else {
         *closedFd = -1;
     }
-    slot.state.store(SlotState::Empty, std::memory_order_relaxed);
-    slot.ref.store(0, std::memory_order_relaxed);
     return true;
 }
 
@@ -338,35 +264,6 @@ void LoadHandleCache::RecordBypass()
 {
     static UC::Metrics::CachedMetric metric{"posix_handle_cache_bypass_total"};
     UC::Metrics::UpdateStats(metric, 1.0);
-}
-
-void LoadHandleCache::RecordLive(size_t live)
-{
-    static UC::Metrics::CachedMetric metric{"posix_handle_cache_live"};
-    UC::Metrics::UpdateStats(metric, static_cast<double>(live));
-}
-
-void LoadHandleCache::AdjustLive(int delta)
-{
-    size_t next = 0;
-    if (delta > 0) {
-        next = live_.fetch_add(static_cast<size_t>(delta), std::memory_order_relaxed) +
-               static_cast<size_t>(delta);
-    } else if (delta < 0) {
-        auto sub = static_cast<size_t>(-delta);
-        auto prev = live_.load(std::memory_order_relaxed);
-        while (prev > 0) {
-            auto want = prev >= sub ? prev - sub : 0;
-            if (live_.compare_exchange_weak(prev, want, std::memory_order_relaxed)) {
-                next = want;
-                break;
-            }
-        }
-        if (prev == 0) { next = 0; }
-    } else {
-        next = live_.load(std::memory_order_relaxed);
-    }
-    RecordLive(next);
 }
 
 }  // namespace UC::PosixStore

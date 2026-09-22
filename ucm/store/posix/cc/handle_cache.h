@@ -138,24 +138,12 @@ public:
     Status Setup(size_t capacity, bool ioDirect);
     BorrowedFd GetOrOpen(const Detail::BlockId& id, const std::string& path);
     void Release(BorrowedFd& borrowed);
-    void Invalidate(const Detail::BlockId& id);
     void CloseAll();
-    size_t Live() const { return live_.load(std::memory_order_relaxed); }
-    size_t Capacity() const { return slots_.size(); }
-
-#ifdef UCM_ENABLE_TEST_HOOKS
-    void SkipReclaimOnInvalidateForTest(bool skip) { skipReclaimOnInvalidate_ = skip; }
-    void SkipReclaimOnUnpinForTest(bool skip) { skipReclaimOnUnpin_ = skip; }
-#endif
 
 private:
-    enum class SlotState : uint8_t { Empty = 0, Live = 1, Tombstone = 2 };
-
     struct alignas(64) Slot {
         static constexpr uint32_t kWriterBit = 1u << 31;
         std::atomic<uint32_t> pin{0};
-        std::atomic<SlotState> state{SlotState::Empty};
-        std::atomic<uint8_t> ref{0};
         int32_t fd{-1};
         Detail::BlockId id{};
     };
@@ -164,7 +152,6 @@ private:
     void UnpinReader(uint32_t slot);
     bool TryAcquireWriter(uint32_t slot);
     void ReleaseWriter(uint32_t slot);
-    void TryReclaimIdleTombstone(uint32_t slot);
     BorrowedFd OptimisticGet(const Detail::BlockId& id);
     BorrowedFd TryInsert(const Detail::BlockId& id, int32_t fd);
     bool TryOccupyVictim(uint32_t slot, int32_t* closedFd);
@@ -174,19 +161,12 @@ private:
     static void RecordMiss();
     static void RecordEvict();
     static void RecordBypass();
-    static void RecordLive(size_t live);
-    void AdjustLive(int delta);
 
     std::vector<Slot> slots_;
     std::atomic<size_t> hand_{0};
-    std::atomic<size_t> live_{0};
     int32_t openFlags_{0};
     mutable std::shared_mutex indexMutex_;
     std::unordered_map<Detail::BlockId, uint32_t, Detail::BlockIdHasher> index_;
-#ifdef UCM_ENABLE_TEST_HOOKS
-    bool skipReclaimOnInvalidate_{false};
-    bool skipReclaimOnUnpin_{false};
-#endif
 };
 
 }  // namespace UC::PosixStore

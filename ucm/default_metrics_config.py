@@ -561,11 +561,6 @@ _GAUGE_METRICS = [
         {"multiprocess_mode": 'livemostrecent'},
     ),
     (
-        "posix_handle_cache_live",
-        "Number of live Posix load file handles currently cached",
-        {"multiprocess_mode": 'livemostrecent'},
-    ),
-    (
         "dramstore_scheduler_request_queue_size",
         "Sampled queued Requests across scheduler runners, excluding batches already dequeued",
         {"multiprocess_mode": "livemostrecent"},

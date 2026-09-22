@@ -71,13 +71,11 @@ TEST_F(UCPosixHandleCacheTest, RepeatGetHitsSameFd)
         ASSERT_TRUE(a.Valid());
         EXPECT_TRUE(a.Cached());
         firstFd = a.Fd();
-        EXPECT_EQ(cache.Live(), 1u);
     }
     auto b = cache.GetOrOpen(id, path);
     ASSERT_TRUE(b.Valid());
     EXPECT_TRUE(b.Cached());
     EXPECT_EQ(b.Fd(), firstFd);
-    EXPECT_EQ(cache.Live(), 1u);
 }
 
 TEST_F(UCPosixHandleCacheTest, CapacityZeroAlwaysUncached)
@@ -96,7 +94,6 @@ TEST_F(UCPosixHandleCacheTest, CapacityZeroAlwaysUncached)
     auto b = cache.GetOrOpen(id, path);
     ASSERT_TRUE(b.Valid());
     EXPECT_FALSE(b.Cached());
-    EXPECT_EQ(cache.Live(), 0u);
 }
 
 TEST_F(UCPosixHandleCacheTest, ClockEvictsWhenFull)
@@ -110,21 +107,27 @@ TEST_F(UCPosixHandleCacheTest, ClockEvictsWhenFull)
     auto p0 = MakeFile(Path(), "c0.bin", '0');
     auto p1 = MakeFile(Path(), "c1.bin", '1');
     auto p2 = MakeFile(Path(), "c2.bin", '2');
+    int32_t fd0 = -1;
+    int32_t fd1 = -1;
     {
         auto a = cache.GetOrOpen(id0, p0);
         auto b = cache.GetOrOpen(id1, p1);
         ASSERT_TRUE(a.Valid());
         ASSERT_TRUE(b.Valid());
+        fd0 = a.Fd();
+        fd1 = b.Fd();
     }
-    EXPECT_EQ(cache.Live(), 2u);
-    auto c = cache.GetOrOpen(id2, p2);
-    ASSERT_TRUE(c.Valid());
-    EXPECT_LE(cache.Live(), 2u);
-    c = {};
+    EXPECT_TRUE(FdAlive(fd0));
+    EXPECT_TRUE(FdAlive(fd1));
+    {
+        auto c = cache.GetOrOpen(id2, p2);
+        ASSERT_TRUE(c.Valid());
+        EXPECT_TRUE(c.Cached());
+    }
+    EXPECT_FALSE(FdAlive(fd0) && FdAlive(fd1));
     auto again = cache.GetOrOpen(id2, p2);
     ASSERT_TRUE(again.Valid());
     EXPECT_TRUE(again.Cached());
-    EXPECT_EQ(cache.Live(), 2u);
 }
 
 TEST_F(UCPosixHandleCacheTest, PinProtectsFdFromEvict)
@@ -148,26 +151,6 @@ TEST_F(UCPosixHandleCacheTest, PinProtectsFdFromEvict)
     EXPECT_EQ(ch, 'X');
 }
 
-TEST_F(UCPosixHandleCacheTest, InvalidateMakesNextGetMiss)
-{
-    using namespace UC::PosixStore;
-    LoadHandleCache cache;
-    ASSERT_EQ(cache.Setup(8, false), UC::Status::OK());
-    auto id = MakeId(30);
-    auto path = MakeFile(Path(), "inv.bin", 'Z');
-    int32_t firstFd = -1;
-    {
-        auto a = cache.GetOrOpen(id, path);
-        ASSERT_TRUE(a.Valid());
-        firstFd = a.Fd();
-    }
-    cache.Invalidate(id);
-    EXPECT_FALSE(FdAlive(firstFd));
-    auto b = cache.GetOrOpen(id, path);
-    ASSERT_TRUE(b.Valid());
-    EXPECT_TRUE(b.Cached());
-}
-
 TEST_F(UCPosixHandleCacheTest, ConcurrentGetKeepsFdReadable)
 {
     using namespace UC::PosixStore;
@@ -189,7 +172,6 @@ TEST_F(UCPosixHandleCacheTest, ConcurrentGetKeepsFdReadable)
     }
     for (auto& th : workers) { th.join(); }
     EXPECT_EQ(ok.load(), 8);
-    EXPECT_EQ(cache.Live(), 1u);
 }
 
 TEST_F(UCPosixHandleCacheTest, MissingFileReturnsError)
@@ -201,29 +183,22 @@ TEST_F(UCPosixHandleCacheTest, MissingFileReturnsError)
     auto borrowed = cache.GetOrOpen(id, Path() + "no-such.bin");
     EXPECT_FALSE(borrowed.Valid());
     EXPECT_EQ(borrowed.Error(), ENOENT);
-    EXPECT_EQ(cache.Live(), 0u);
 }
 
-TEST_F(UCPosixHandleCacheTest, InvalidateDuringPinDoesNotCloseHeldFd)
+TEST_F(UCPosixHandleCacheTest, PinnedSlotSurvivesFullSweep)
 {
     using namespace UC::PosixStore;
     LoadHandleCache cache;
     ASSERT_EQ(cache.Setup(2, false), UC::Status::OK());
-    auto id0 = MakeId(80);
-    auto id1 = MakeId(81);
-    auto id2 = MakeId(82);
-    auto p0 = MakeFile(Path(), "cas0.bin", 'A');
-    auto p1 = MakeFile(Path(), "cas1.bin", 'B');
-    auto p2 = MakeFile(Path(), "cas2.bin", 'C');
-    auto held = cache.GetOrOpen(id0, p0);
+    auto held = cache.GetOrOpen(MakeId(80), MakeFile(Path(), "cas0.bin", 'A'));
     ASSERT_TRUE(held.Valid());
     auto heldFd = held.Fd();
     ASSERT_TRUE(FdAlive(heldFd));
-    cache.Invalidate(id0);
-    auto other = cache.GetOrOpen(id1, p1);
-    ASSERT_TRUE(other.Valid());
-    auto extra = cache.GetOrOpen(id2, p2);
-    ASSERT_TRUE(extra.Valid());
+    for (uint8_t i = 0; i < 6; ++i) {
+        auto name = std::string("cas") + static_cast<char>('1' + i) + ".bin";
+        auto other = cache.GetOrOpen(MakeId(90 + i), MakeFile(Path(), name.c_str(), 'B'));
+        ASSERT_TRUE(other.Valid());
+    }
     EXPECT_TRUE(FdAlive(heldFd));
     char ch = 0;
     EXPECT_EQ(::pread(heldFd, &ch, 1, 0), 1);
@@ -246,11 +221,9 @@ TEST_F(UCPosixHandleCacheTest, CloseAllReleasesLiveFd)
     EXPECT_TRUE(FdAlive(fd));
     cache.CloseAll();
     EXPECT_FALSE(FdAlive(fd));
-    EXPECT_EQ(cache.Live(), 0u);
 }
 
-#ifdef UCM_ENABLE_TEST_HOOKS
-TEST_F(UCPosixHandleCacheTest, StaleSlotIsReclaimedByInsert)
+TEST_F(UCPosixHandleCacheTest, EvictedSlotIsReopenedOnNextGet)
 {
     using namespace UC::PosixStore;
     LoadHandleCache cache;
@@ -259,22 +232,24 @@ TEST_F(UCPosixHandleCacheTest, StaleSlotIsReclaimedByInsert)
     auto id1 = MakeId(41);
     auto p0 = MakeFile(Path(), "t0.bin", '0');
     auto p1 = MakeFile(Path(), "t1.bin", '1');
-    int32_t staleFd = -1;
+    int32_t firstFd = -1;
     {
         auto a = cache.GetOrOpen(id0, p0);
         ASSERT_TRUE(a.Valid());
-        staleFd = a.Fd();
-        // Skip eager reclaim so Invalidate only drops the index entry.
-        // The Live slot (and its fd) must still be recyclable by the next insert.
-        cache.SkipReclaimOnInvalidateForTest(true);
-        cache.SkipReclaimOnUnpinForTest(true);
-        cache.Invalidate(id0);
+        ASSERT_TRUE(a.Cached());
+        firstFd = a.Fd();
     }
-    EXPECT_TRUE(FdAlive(staleFd));
-    cache.SkipReclaimOnInvalidateForTest(false);
-    cache.SkipReclaimOnUnpinForTest(false);
-    auto b = cache.GetOrOpen(id1, p1);
-    ASSERT_TRUE(b.Valid());
-    EXPECT_FALSE(FdAlive(staleFd));
+    EXPECT_TRUE(FdAlive(firstFd));
+    {
+        auto b = cache.GetOrOpen(id1, p1);
+        ASSERT_TRUE(b.Valid());
+        ASSERT_TRUE(b.Cached());
+    }
+    EXPECT_FALSE(FdAlive(firstFd));
+    auto again = cache.GetOrOpen(id0, p0);
+    ASSERT_TRUE(again.Valid());
+    EXPECT_TRUE(again.Cached());
+    char ch = 0;
+    EXPECT_EQ(::pread(again.Fd(), &ch, 1, 0), 1);
+    EXPECT_EQ(ch, '0');
 }
-#endif
